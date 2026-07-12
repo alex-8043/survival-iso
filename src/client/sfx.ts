@@ -112,35 +112,73 @@ function breakSound(material: string, vol: number, breaking: boolean): void {
   }
 }
 
-// --- Animales: parámetros base por tipo ---
-interface AnimalVoice { type: OscillatorType; f0: number; f1: number; dur: number; filt?: number; }
-const VOICE: Record<string, AnimalVoice> = {
-  cow: { type: 'sawtooth', f0: 240, f1: 150, dur: 0.7, filt: 900 },
-  pig: { type: 'sawtooth', f0: 220, f1: 180, dur: 0.28, filt: 1200 },
-  chicken: { type: 'square', f0: 900, f1: 1300, dur: 0.09 },
-  sheep: { type: 'sawtooth', f0: 360, f1: 300, dur: 0.5, filt: 1400 },
-  frog: { type: 'square', f0: 150, f1: 120, dur: 0.16, filt: 700 },
-  monkey: { type: 'square', f0: 520, f1: 820, dur: 0.12 },
-  bat: { type: 'sine', f0: 4200, f1: 6200, dur: 0.07 },
-  villager: { type: 'sine', f0: 250, f1: 210, dur: 0.3, filt: 1100 },
-};
+// --- Animales: síntesis con vibrato para sonidos más realistas ---
+// Tono con vibrato opcional (frecuencia oscilante) y filtro paso-bajo.
+function vibTone(type: OscillatorType, f0: number, f1: number, t0: number, dur: number, peak: number, filterHz = 0, vibHz = 0, vibDepth = 0): void {
+  if (!ctx || !master) return;
+  const osc = ctx.createOscillator();
+  osc.type = type;
+  osc.frequency.setValueAtTime(f0, t0);
+  if (f1 !== f0) osc.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t0 + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t0 + Math.min(0.05, dur * 0.25));
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  let node: AudioNode = g;
+  osc.connect(g);
+  if (filterHz) { const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = filterHz; g.connect(f); node = f; }
+  node.connect(master);
+  if (vibHz > 0) {
+    const lfo = ctx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = vibHz;
+    const ld = ctx.createGain(); ld.gain.value = vibDepth;
+    lfo.connect(ld); ld.connect(osc.frequency);
+    lfo.start(t0); lfo.stop(t0 + dur + 0.02);
+  }
+  osc.start(t0); osc.stop(t0 + dur + 0.02);
+}
 
 function animalSound(type: string, event: 'idle' | 'hurt' | 'death', vol: number): void {
   if (!ctx) return;
-  const v = VOICE[type] || VOICE.villager;
   const t = now();
-  if (event === 'idle') {
-    if (type === 'chicken') { tone('square', 900, 1200, t, 0.08, 0.12 * vol); tone('square', 1100, 1400, t + 0.12, 0.07, 0.10 * vol); }
-    else if (type === 'monkey') { tone('square', 520, 820, t, 0.1, 0.12 * vol); tone('square', 600, 900, t + 0.14, 0.09, 0.10 * vol); }
-    else if (type === 'frog') { tone('square', 150, 120, t, 0.16, 0.14 * vol, 700); tone('square', 150, 110, t + 0.2, 0.14, 0.12 * vol, 700); }
-    else tone(v.type, v.f0, v.f1, t, v.dur, 0.14 * vol, v.filt);
-  } else if (event === 'hurt') {
-    tone(v.type, v.f0 * 1.15, v.f0 * 0.6, t, Math.min(0.22, v.dur * 0.6), 0.2 * vol, v.filt);
-    noise(t, 0.06, 0.08 * vol, 'bandpass', 1200, 1);
-  } else { // death
-    tone(v.type, v.f0, v.f0 * 0.4, t, v.dur * 1.3, 0.22 * vol, v.filt);
-    tone(v.type, v.f0 * 0.5, v.f0 * 0.25, t + 0.05, v.dur * 1.2, 0.16 * vol, v.filt);
-    noise(t, 0.18, 0.08 * vol, 'lowpass', 1400, 0.8);
+  if (event === 'hurt') {
+    vibTone('sawtooth', 520, 190, t, 0.16, 0.2 * vol, 1500);
+    noise(t, 0.05, 0.08 * vol, 'bandpass', 1100, 1);
+    return;
+  }
+  if (event === 'death') {
+    vibTone('sawtooth', 360, 90, t, 0.5, 0.22 * vol, 1000, 7, 8);
+    noise(t, 0.2, 0.08 * vol, 'lowpass', 1200, 0.8);
+    return;
+  }
+  // idle: sonido característico de cada animal
+  switch (type) {
+    case 'cow': // muuuu
+      vibTone('sawtooth', 172, 118, t, 0.75, 0.16 * vol, 620, 6, 5);
+      vibTone('sine', 86, 60, t, 0.75, 0.06 * vol, 300);
+      break;
+    case 'pig': // oink oink (dos gruñidos nasales)
+      for (let i = 0; i < 2; i++) { const tt = t + i * 0.17; vibTone('sawtooth', 255, 165, tt, 0.12, 0.16 * vol, 900, 40, 25); noise(tt, 0.05, 0.05 * vol, 'bandpass', 820, 2); }
+      break;
+    case 'chicken': // bok bok bawk
+      vibTone('square', 1050, 960, t, 0.05, 0.12 * vol, 2600);
+      vibTone('square', 1000, 900, t + 0.12, 0.05, 0.11 * vol, 2600);
+      vibTone('square', 840, 1360, t + 0.25, 0.13, 0.13 * vol, 2600);
+      break;
+    case 'sheep': // beeee (con vibrato marcado)
+      vibTone('sawtooth', 430, 380, t, 0.5, 0.15 * vol, 1600, 13, 34);
+      break;
+    case 'frog': // croac croac
+      for (let i = 0; i < 2; i++) { const tt = t + i * 0.22; vibTone('sawtooth', 135, 120, tt, 0.14, 0.16 * vol, 460, 30, 34); }
+      break;
+    case 'monkey': // uuh uuh (chillidos ascendentes)
+      vibTone('square', 520, 900, t, 0.12, 0.13 * vol, 2400);
+      vibTone('square', 560, 1000, t + 0.15, 0.11, 0.12 * vol, 2400);
+      break;
+    case 'bat': // chillido agudo
+      vibTone('sine', 4600, 6400, t, 0.06, 0.1 * vol);
+      break;
+    default: // aldeano: "hmm"
+      vibTone('sine', 210, 178, t, 0.26, 0.12 * vol, 900);
   }
 }
 

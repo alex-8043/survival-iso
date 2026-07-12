@@ -4,7 +4,7 @@
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
 import { TILE_W, TILE_H, MAX_ELEV_PX, BLOCK_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
-import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, villageCenterAt, villageLayoutAt, isHouseWall, isHouseInterior, VILLAGE_SCAN, BEDROCK_LEVEL, type CaveTile, type VillageHouse } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, villageCenterAt, villageLayoutAt, isHouseWall, isHouseInterior, VILLAGE_SCAN, BEDROCK_LEVEL, baseLevelAt, subsurfaceMaterial, subsurfaceOreAt, type CaveTile, type VillageHouse } from '../shared/worldgen';
 import { avatarCanvas, type AvatarAction, type Customization, type HeldTool } from './avatar';
 import { ITEMS } from '../shared/items';
 import type { InteractTarget, Snapshot, Structure, Location, TerrainEdit, FluidEdit } from '../shared/protocol';
@@ -21,6 +21,8 @@ const TERRAIN_COLORS: Record<number, number> = {
 // Colores de materiales para bloques editados (excavados/colocados).
 const MATERIAL_COLORS: Record<string, number> = {
   dirt: 0x7a5433, sand: 0xd9c48a, stone: 0x8f8b7c, snow: 0xe9edf2, grass: 0x5a9e4f,
+  // Minerales del subsuelo (piedra tintada, vistosa para localizarlos al excavar).
+  coal: 0x3b3b42, iron: 0xb0906f, gold: 0xd4b64e, diamond: 0x5ec7cc,
 };
 const ANIM_FRAMES: Record<AvatarAction, number> = { idle: 1, walk: 6, run: 6, swing: 6, swim: 6 };
 const ANIM_RATE: Record<AvatarAction, number> = { idle: 0.5, walk: 1.5, run: 2.6, swing: 2.2, swim: 1.3 };
@@ -45,6 +47,7 @@ export class GameRenderer {
   readonly highlight = new Graphics();
   readonly ghost = new Graphics();
   readonly entities = new Container();
+  readonly harvestBar = new Graphics(); // barra de progreso de picado (por encima de todo)
   readonly darkness = new Graphics();
 
   readonly nodes = new Map<string, RenderNode>();
@@ -54,6 +57,7 @@ export class GameRenderer {
   readonly floats: FloatText[] = [];
   readonly depleted = new Set<string>();
   jumpOff = 0; jumpVel = 0;
+  harvestActive = false; harvestProgress = 0; // barra de picado (desde el snapshot)
 
   // Cámara: zoom (rueda), suavizado de desnivel y paneo (clic rueda).
   zoom = 1; camLift = 0; panX = 0; panY = 0;
@@ -62,6 +66,7 @@ export class GameRenderer {
   // Aldeas (render + clic sobre camas; los aldeanos son animales).
   readonly villages = new Map<string, RenderVillage>();
   readonly villageBeds = new Set<string>();
+  readonly villageBlocked = new Set<string>(); // tiles de casa/cultivo (sin árboles/rocas)
   talkTarget: { id: number; x: number; y: number } | null = null;
   sleepTarget: { x: number; y: number } | null = null;
 
@@ -114,6 +119,7 @@ export class GameRenderer {
     this.world.addChild(this.highlight);
     this.world.addChild(this.ghost);
     this.world.addChild(this.entities);
+    this.world.addChild(this.harvestBar);
     this.app.stage.addChild(this.world);
     this.app.stage.addChild(this.darkness);
     this.caveDark = new Sprite(Texture.EMPTY);
@@ -275,7 +281,16 @@ export class GameRenderer {
   // Nivel/agua efectivos con ediciones de terreno (superficie).
   private effLevelAt(x: number, y: number): number {
     const e = this.edits.get(x + ',' + y);
-    return e ? e.lvl : tileAt(x, y, this.seed).level;
+    return e ? e.lvl : baseLevelAt(x, y, this.seed);
+  }
+  // Color del tope de una tile SIN editar: si está por debajo de su superficie
+  // original (hoyo natural) muestra subsuelo/mineral; si no, el color del bioma.
+  private topColorAt(x: number, y: number, terrain: number, origLevel: number, lvl: number): number {
+    if (lvl < origLevel) {
+      const ore = lvl <= 0 ? subsurfaceOreAt(x, y, lvl, this.seed) : null;
+      return MATERIAL_COLORS[ore ?? subsurfaceMaterial(terrain as never, origLevel - lvl)] ?? 0x8f8b7c;
+    }
+    return TERRAIN_COLORS[terrain] ?? 0x5a9e4f;
   }
   private effWaterAt(x: number, y: number): boolean {
     const k = x + ',' + y;
@@ -290,7 +305,9 @@ export class GameRenderer {
     this.terrainDirty = true;
   }
   private nodeKindAtL(x: number, y: number): string | null {
-    return this.loc === 'cave' ? caveNodeAt(x, y, this.caveSeed) : nodeAt(x, y, this.seed);
+    if (this.loc === 'cave') return caveNodeAt(x, y, this.caveSeed);
+    if (this.villageBlocked.has(x + ',' + y)) return null; // ni árboles ni rocas en casas/cultivos
+    return nodeAt(x, y, this.seed);
   }
   private nodeKey(x: number, y: number): string {
     return this.loc === 'cave' ? 'c' + this.caveSeed + ':' + x + ',' + y : x + ',' + y;
@@ -299,6 +316,7 @@ export class GameRenderer {
   applySnapshot(snap: Snapshot): void {
     this.snapSpeed = Math.hypot(snap.px - this.prx, snap.py - this.pry) * 60; // tiles/s (1 tick = 1/60 s)
     this.prx = snap.px; this.pry = snap.py; this.tod = snap.time.tod; this.onWater = snap.onWater; this.riding = snap.riding;
+    this.harvestActive = snap.harvestActive; this.harvestProgress = snap.harvestProgress;
     const seen = new Set<number>();
     for (const a of snap.animals) {
       if (!a.alive) continue;
@@ -349,6 +367,19 @@ export class GameRenderer {
   private refreshWindow(ptx: number, pty: number): void {
     this.drawTerrain(ptx, pty);
     const R = this.viewRadius();
+    // Tiles ocupados por aldea (casas + cultivo): no se dibujan árboles/rocas encima.
+    this.villageBlocked.clear();
+    if (this.loc === 'surface') {
+      const M = VILLAGE_SCAN;
+      for (let dy = -R - M; dy <= R + M; dy++) for (let dx = -R - M; dx <= R + M; dx++) {
+        const cx = ptx + dx, cy = pty + dy;
+        if (!villageCenterAt(cx, cy, this.seed)) continue;
+        const lay = villageLayoutAt(cx, cy, this.seed);
+        for (const h of lay.houses) for (let yy = h.y0; yy < h.y0 + h.h; yy++) for (let xx = h.x0; xx < h.x0 + h.w; xx++) this.villageBlocked.add(xx + ',' + yy);
+        const f = lay.farm;
+        for (let yy = f.y0; yy < f.y0 + f.h; yy++) for (let xx = f.x0; xx < f.x0 + f.w; xx++) this.villageBlocked.add(xx + ',' + yy);
+      }
+    }
     const want = new Set<string>();
     for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
       const x = ptx + dx, y = pty + dy;
@@ -371,6 +402,7 @@ export class GameRenderer {
     const wantD = new Set<string>();
     for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
       const x = ptx + dx, y = pty + dy;
+      if (this.loc === 'surface' && this.villageBlocked.has(x + ',' + y)) continue; // sin decoración en casas/cultivos
       const kind = this.loc === 'cave' ? caveDecorAt(x, y, this.caveSeed) : surfaceDecorAt(x, y, this.seed);
       if (!kind) continue;
       const key = 'd' + x + ',' + y;
@@ -576,8 +608,8 @@ export class GameRenderer {
             g.poly([s.x, s.y - hh, s.x + hw, s.y, s.x, s.y + hh, s.x - hw, s.y]).fill({ color: col });
             g.poly([s.x, s.y - hh * 0.5, s.x + hw * 0.5, s.y, s.x, s.y + hh * 0.5, s.x - hw * 0.5, s.y]).fill({ color: swamp ? 0x556b3a : 0x4f93c4, alpha: swamp ? 0.4 : 0.5 });
           } else {
-            const lvl = edit ? edit.lvl : info.level;
-            const base = edit ? (MATERIAL_COLORS[edit.top] ?? TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f) : (TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f);
+            const lvl = edit ? edit.lvl : baseLevelAt(x, y, this.seed);
+            const base = edit ? (MATERIAL_COLORS[edit.top] ?? TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f) : this.topColorAt(x, y, info.terrain, info.level, lvl);
             const topY = s.y - lvl * BLOCK_PX;
             const rLvl = this.effWaterAt(x + 1, y) ? 0 : this.effLevelAt(x + 1, y);
             const lLvl = this.effWaterAt(x, y + 1) ? 0 : this.effLevelAt(x, y + 1);
@@ -595,8 +627,8 @@ export class GameRenderer {
               for (let i = 1; i < n; i++) { const yy = topY + i * BLOCK_PX; g.moveTo(s.x - hw, yy); g.lineTo(s.x, yy + hh); g.stroke({ width: 1, color: 0x000000, alpha: 0.13 }); }
             }
             g.poly([s.x, topY - hh, s.x + hw, topY, s.x, topY + hh, s.x - hw, topY]).fill({ color: base });
-            if (!edit && caveEntranceAt(x, y, this.seed)) this.drawEntrance(g, s.x, topY);
-            else if (!edit && springAt(x, y, this.seed)) this.drawSpring(g, s.x, topY);
+            // (Las bocas de cueva se han eliminado: ahora las cuevas son hoyos reales.)
+            if (!edit && springAt(x, y, this.seed)) this.drawSpring(g, s.x, topY);
           }
         }
       }
@@ -1125,6 +1157,7 @@ export class GameRenderer {
     this.target = next;
 
     this.highlight.clear();
+    this.harvestBar.clear();
     if (next) {
       let hx = 0, hy = 0, hl = 0;
       if (next.kind === 'node' || next.kind === 'block') { hx = next.x; hy = next.y; hl = this.elevAtL(next.x, next.y) * MAX_ELEV_PX; }
@@ -1132,6 +1165,14 @@ export class GameRenderer {
       const s = gridToScreen(hx, hy), hw = TILE_W / 2, hh = TILE_H / 2, yy = s.y - hl;
       const hc = next.kind === 'animal' ? 0xff6b6b : next.kind === 'block' ? 0xe8e8e8 : 0xf5c96b;
       this.highlight.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).stroke({ width: 2, color: hc, alpha: 0.95 });
+      // Barra de progreso de picado (estilo Minecraft) por encima del objetivo.
+      if (this.harvestActive && this.harvestProgress > 0) {
+        const bw = TILE_W * 0.82, bh = 5, bx = s.x - bw / 2, by = yy - hh - 14;
+        const p = Math.min(1, this.harvestProgress);
+        this.harvestBar.rect(bx - 1, by - 1, bw + 2, bh + 2).fill({ color: 0x101014, alpha: 0.72 });
+        this.harvestBar.rect(bx, by, bw, bh).fill({ color: 0x3a3a42 });
+        this.harvestBar.rect(bx, by, bw * p, bh).fill({ color: p >= 0.999 ? 0x8bf58b : 0x7ad14a });
+      }
     }
     if (this.structTarget) {
       const st = this.structTarget;

@@ -52,6 +52,11 @@ export interface Snapshot {
   caveSeed: number;
   onEntrance: boolean; // sobre una entrada de cueva (superficie) o salida (cueva)
   riding: boolean; // en barca
+  dead: boolean; // sin vida (mostrar pantalla de muerte)
+  harvestActive: boolean; // hay un picado cargándose (dibujar barra de progreso)
+  harvestProgress: number; // 0..1 del picado actual
+  harvestX: number; // posición del objetivo picado (para situar la barra)
+  harvestY: number;
 }
 
 export interface InputState {
@@ -105,6 +110,7 @@ export type ClientMsg =
   | { t: 'place'; item: string; x: number; y: number }
   | { t: 'consume'; item?: string }
   | { t: 'jump' }
+  | { t: 'respawn' }
   | { t: 'drink' }
   | { t: 'toggleCave' }
   | { t: 'sleep' }

@@ -4,7 +4,7 @@ import {
   createSim, createSimFromSave, serializeSim, stepSim, consume, drink, craft, place, board,
   timeInfo, animalSnaps, invSlots, playerPos, onWaterOf, toggleCave, onEntranceOf, bestFood,
   moveItem, quickMove, moveAmount, sortInv, sortChest, chestItems,
-  sleep, trade, acceptQuest, completeQuest, jump,
+  sleep, trade, acceptQuest, completeQuest, jump, respawn, harvestInfo,
 } from './world';
 import type { Sim, StepResult } from './world';
 import { WORLD_SEED, TICK_MS } from '../shared/constants';
@@ -42,10 +42,12 @@ function startLoop(): void {
     if (!sim) return;
     const r = stepSim(sim, dt);
     const p = playerPos(sim);
+    const hi = harvestInfo(sim);
     const snap: Snapshot = {
       tick: sim.tick, px: p.x, py: p.y, onWater: onWaterOf(sim),
       animals: animalSnaps(sim), stats: sim.stats, time: timeInfo(sim),
-      loc: sim.location, caveSeed: sim.caveSeed, onEntrance: onEntranceOf(sim), riding: sim.riding,
+      loc: sim.location, caveSeed: sim.caveSeed, onEntrance: onEntranceOf(sim), riding: sim.riding, dead: sim.dead,
+      harvestActive: hi.active, harvestProgress: hi.progress, harvestX: hi.x, harvestY: hi.y,
     };
     post({ t: 'snapshot', snap });
     for (const h of r.harvestEvents) post({ t: 'harvest', x: h.x, y: h.y, depleted: h.depleted });
@@ -96,6 +98,8 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     }
   } else if (m.t === 'jump') {
     jump(sim);
+  } else if (m.t === 'respawn') {
+    respawn(sim);
   } else if (m.t === 'drink') {
     const r = drink(sim);
     if (r.floater) post({ t: 'floater', ...r.floater });

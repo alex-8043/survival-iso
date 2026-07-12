@@ -79,6 +79,20 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   const worker = new Worker(new URL('./sim/worker.ts', import.meta.url), { type: 'module' });
   worker.onerror = (e) => showError('Fallo en la simulación: ' + (e.message || 'desconocido'));
 
+  // Pantalla de muerte con opción de reaparecer.
+  const showDeath = (on: boolean): void => {
+    let el = document.getElementById('death');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'death';
+      el.innerHTML = '<div class="death-card"><h1>Has muerto</h1><p class="death-sub">Te quedaste sin corazones.</p><button class="mbtn primary" id="respawn-btn">Reaparecer</button></div>';
+      document.body.appendChild(el);
+      document.getElementById('respawn-btn')!.addEventListener('click', () => { worker.postMessage({ t: 'respawn' }); });
+    }
+    el.style.display = on ? 'flex' : 'none';
+    setInputEnabled(!on);
+  };
+
   const refreshInv = (inv: Slot[], silent = false) => {
     if (!silent) {
       const prev = slotCounts(lastSlots);
@@ -113,6 +127,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
         renderer.setLayer(m.snap.loc, m.snap.caveSeed);
         renderer.applySnapshot(m.snap);
         updateMinimap(m.snap.px, m.snap.py, m.snap.loc, m.snap.caveSeed);
+        showDeath(m.snap.dead);
         lastStats = m.snap.stats;
         if (m.snap.tick % 6 === 0) updateHud(m.snap.stats, m.snap.time);
         if (m.snap.tick % 6 === 0 && isPanelOpen()) updatePanelStats(lastStats);

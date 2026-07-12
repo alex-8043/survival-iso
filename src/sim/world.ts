@@ -24,7 +24,7 @@ import {
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN, MAX_BLOCK, BEDROCK_LEVEL, WATER_SURFACE, terrainTopMaterial, materialItem, subsurfaceMaterial, villageLayoutAt, isHouseWall, nearestVillage, VILLAGE_SCAN } from '../shared/worldgen';
+import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN, MAX_BLOCK, BEDROCK_LEVEL, WATER_SURFACE, terrainTopMaterial, materialItem, subsurfaceMaterial, baseLevelAt, subsurfaceOreAt, pitDepthAt, villageLayoutAt, isHouseWall, nearestVillage, VILLAGE_SCAN } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
 import type { TerrainEdit, FluidEdit } from '../shared/protocol';
 import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor } from '../shared/items';
@@ -51,6 +51,8 @@ export interface Sim {
   interactTarget: InteractTarget;
   activeTool: string | null;
   harvestTimer: number;
+  harvestMax: number; // duración del "cargado" actual (para la barra de progreso)
+  harvestKey: string; // objetivo que se está picando (resetea el progreso al cambiar)
   harvested: Map<string, number>;
   depleted: Set<string>;
   structures: Structure[];
@@ -73,11 +75,13 @@ export interface Sim {
   caveCooldown: number;
   wasOnEntrance: boolean;
   jumpTimer: number; // ventana tras saltar en la que se pueden subir 2 bloques
+  dead: boolean; // sin vida (congelado hasta reaparecer)
   edits: Map<string, { lvl: number; top: string }>; // ediciones de terreno (superficie)
   fluids: Map<string, number>; // celdas de fluido dinámico (1=agua)
   floodQueue: { x: number; y: number }[]; // frente de expansión de fluido pendiente
   village: { cx: number; cy: number } | null; // aldea cercana cacheada
   villageWalls: Set<string>; // muros macizos de la aldea cacheada
+  villageBlocked: Set<string>; // tiles de casa/cultivo (sin árboles encima)
   villagesLooted: Set<string>; // aldeas cuyo cofre ya se generó
 }
 
@@ -102,7 +106,9 @@ const keyOf = (x: number, y: number) => x + ',' + y;
 
 // Nodo activo según la capa (superficie o cueva).
 function activeNodeAt(sim: Sim, x: number, y: number): NodeKind | null {
-  return sim.location === 'cave' ? caveNodeAt(x, y, sim.caveSeed) : nodeAt(x, y, sim.seed);
+  if (sim.location === 'cave') return caveNodeAt(x, y, sim.caveSeed);
+  if (sim.villageBlocked.has(keyOf(x, y))) return null; // ni árboles ni rocas en casas/cultivos
+  return nodeAt(x, y, sim.seed);
 }
 // Clave de recolección con prefijo de capa (evita colisiones superficie/cueva).
 function nodeKeyOf(sim: Sim, x: number, y: number): string {
@@ -125,7 +131,7 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     world, playerId, seed,
     input: { up: false, down: false, left: false, right: false, sprint: false },
     interactActive: false, interactTarget: null, activeTool: null,
-    harvestTimer: 0, harvested: new Map(), depleted: new Set(),
+    harvestTimer: 0, harvestMax: 0, harvestKey: '', harvested: new Map(), depleted: new Set(),
     structures: [], nextStructId: 1,
     animals: [], nextAnimalId: 1, spawnTimer: 0, caveMobTimer: 0,
     inv: makeSlots(INV_SIZE), chests: {},
@@ -133,9 +139,9 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
     location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null, riding: false,
     acceptedQuests: [],
-    caveCooldown: 0, wasOnEntrance: false, jumpTimer: 0,
+    caveCooldown: 0, wasOnEntrance: false, jumpTimer: 0, dead: false,
     edits: new Map(), fluids: new Map(), floodQueue: [],
-    village: null, villageWalls: new Set(), villagesLooted: new Set(),
+    village: null, villageWalls: new Set(), villageBlocked: new Set(), villagesLooted: new Set(),
   };
 }
 
@@ -223,10 +229,25 @@ function structureAt(sim: Sim, x: number, y: number): Structure | undefined {
   return sim.structures.find((s) => s.x === x && s.y === y);
 }
 
-// Nivel efectivo (con ediciones de terreno) de una tile de superficie.
+// Nivel efectivo (con ediciones de terreno y hoyos naturales) de una tile.
 function effLevel(sim: Sim, x: number, y: number): number {
   const e = sim.edits.get(keyOf(x, y));
-  return e ? e.lvl : tileAt(x, y, sim.seed).level;
+  return e ? e.lvl : baseLevelAt(x, y, sim.seed);
+}
+
+// Contenido del bloque superior de una tile: mineral (según profundidad) o
+// material normal. tier = nivel de pico necesario (0 = mano vale, 1/2/3 = pico).
+function blockContent(sim: Sim, x: number, y: number): { ore: NodeKind | null; item: string; tier: number } {
+  const cur = effLevel(sim, x, y);
+  const ore = cur <= 0 ? subsurfaceOreAt(x, y, cur, sim.seed) : null;
+  if (ore) {
+    const tier = ore === 'coal' ? 1 : ore === 'iron' ? 2 : 3;
+    return { ore, item: NODE_KINDS[ore].item, tier };
+  }
+  const base = tileAt(x, y, sim.seed);
+  const e = sim.edits.get(keyOf(x, y));
+  const item = materialItem(e ? e.top : terrainTopMaterial(base.terrain));
+  return { ore: null, item, tier: item === 'stone' ? 1 : 0 };
 }
 // ¿Hay agua o fluido dinámico en la tile de superficie?
 function effWater(sim: Sim, x: number, y: number): boolean {
@@ -313,6 +334,7 @@ export function onWaterOf(sim: Sim): boolean {
 export function stepSim(sim: Sim, dt: number): StepResult {
   const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [], structuresChanged: false };
   const eid = sim.playerId;
+  if (sim.dead) { sim.tick++; return res; } // congelado hasta reaparecer
   sim.timeS += dt;
   if (sim.jumpTimer > 0) sim.jumpTimer = Math.max(0, sim.jumpTimer - dt);
 
@@ -332,10 +354,13 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   const len = Math.hypot(gx, gy) || 1;
   const vx = moving ? (gx / len) * speed : 0;
   const vy = moving ? (gy / len) * speed : 0;
+  // Colisión con radio: se comprueba el borde delantero del jugador para que el
+  // sprite no se meta dentro de los bloques/muros al pegarse a ellos.
+  const RAD = 0.42;
   const nx = px + vx * dt;
-  if (!blockedAt(sim, nx, py)) px = nx;
+  if (!blockedAt(sim, nx + Math.sign(vx) * RAD, py)) px = nx;
   const ny = py + vy * dt;
-  if (!blockedAt(sim, px, ny)) py = ny;
+  if (!blockedAt(sim, px, ny + Math.sign(vy) * RAD)) py = ny;
   Position.x[eid] = px;
   Position.y[eid] = py;
 
@@ -367,6 +392,7 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   sim.stats.thirst = Math.max(0, sim.stats.thirst - THIRST_DECAY * dt);
   if (sim.stats.food <= 0 || sim.stats.thirst <= 0) sim.stats.health = Math.max(0, sim.stats.health - STARVE_DAMAGE * dt);
   else if (sim.stats.health < 100) sim.stats.health = Math.min(100, sim.stats.health + HEALTH_REGEN * dt);
+  if (sim.stats.health <= 0 && !sim.dead) { sim.dead = true; res.sfx.push({ sound: 'animal:player:death', x: px, y: py }); }
 
   // Lava en cueva: tocarla (estar justo al lado) hace MUCHO daño.
   if (sim.location === 'cave') {
@@ -381,12 +407,28 @@ export function stepSim(sim: Sim, dt: number): StepResult {
     }
   }
 
+  // Picado tipo Minecraft: se "carga" una barra durante harvestMax segundos y
+  // sólo al llenarse se rompe/recolecta. Al cambiar de objetivo (o de herramienta)
+  // el progreso se reinicia. Nada se autopica: incluso a mano tarda su tiempo.
   if (sim.interactActive && sim.interactTarget) {
-    if (sim.harvestTimer <= 0) {
-      const cd = doInteract(sim, res, px, py);
-      if (cd > 0) sim.harvestTimer = cd;
-    } else sim.harvestTimer -= dt;
-  } else sim.harvestTimer = 0;
+    const key = interactKey(sim.interactTarget) + '|' + (sim.activeTool ?? '');
+    if (key !== sim.harvestKey) {
+      sim.harvestKey = key;
+      sim.harvestMax = harvestNeed(sim, sim.interactTarget);
+      sim.harvestTimer = sim.harvestMax > 0 ? sim.harvestMax : 0;
+      if (sim.harvestMax === -1) doInteract(sim, res, px, py); // aviso: falta herramienta
+    } else if (sim.harvestMax > 0) {
+      sim.harvestTimer -= dt;
+      if (sim.harvestTimer <= 0) {
+        doInteract(sim, res, px, py); // rompe/recolecta una unidad
+        sim.harvestMax = harvestNeed(sim, sim.interactTarget); // ¿queda material o topamos algo?
+        sim.harvestTimer = sim.harvestMax > 0 ? sim.harvestMax : 0;
+        if (sim.harvestMax === -1) doInteract(sim, res, px, py); // p.ej. tierra->piedra sin pico
+      }
+    }
+  } else {
+    sim.harvestKey = ''; sim.harvestTimer = 0; sim.harvestMax = 0;
+  }
 
   updateAnimals(sim, dt);
   if (sim.village || sim.tick % 20 === 0) ensureVillage(sim, res); // aldea cercana (throttle si no hay)
@@ -447,6 +489,60 @@ export function toggleCave(sim: Sim, res: StepResult): void {
     res.sfx.push({ sound: 'ui:cave', x: back.x, y: back.y });
     res.floaters.push({ text: 'Sales a la superficie', color: 0x9edb8a, x: back.x, y: back.y });
   }
+}
+
+// Identificador del objetivo de picado (resetea el progreso al cambiar).
+function interactKey(tgt: NonNullable<InteractTarget>): string {
+  if (tgt.kind === 'animal') return 'a' + tgt.id;
+  return tgt.kind[0] + tgt.x + ',' + tgt.y;
+}
+
+// Estado del picado en curso para dibujar la barra de progreso en el cliente.
+export function harvestInfo(sim: Sim): { active: boolean; progress: number; x: number; y: number } {
+  if (!sim.interactActive || !sim.interactTarget || sim.harvestMax <= 0) return { active: false, progress: 0, x: 0, y: 0 };
+  const tgt = sim.interactTarget;
+  let x: number, y: number;
+  if (tgt.kind === 'animal') {
+    const a = sim.animals.find((an) => an.id === tgt.id && an.alive);
+    if (!a) return { active: false, progress: 0, x: 0, y: 0 };
+    x = a.x; y = a.y;
+  } else { x = tgt.x; y = tgt.y; }
+  const progress = Math.max(0, Math.min(1, 1 - sim.harvestTimer / sim.harvestMax));
+  return { active: true, progress, x, y };
+}
+
+// Tiempo para romper el objetivo actual: >0 = segundos; -1 = falta herramienta;
+// 0 = no rompible. La tierra/arena a mano tardan bastante (no se autopican).
+function harvestNeed(sim: Sim, tgt: NonNullable<InteractTarget>): number {
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  const tool = toolFor(sim.activeTool);
+  if (tgt.kind === 'node') {
+    if (Math.hypot(tgt.x - px, tgt.y - py) > INTERACT_RANGE) return 0;
+    const kind = activeNodeAt(sim, tgt.x, tgt.y);
+    if (!kind || nodeAmount(sim, tgt.x, tgt.y, kind) <= 0) return 0;
+    if ((kind === 'rock' || kind === 'coal') && !(tool && tool.kind === 'pickaxe')) return -1;
+    if (kind === 'iron' && !(tool && tool.kind === 'pickaxe' && tool.tier >= 2)) return -1;
+    if ((kind === 'gold' || kind === 'diamond') && !(tool && tool.kind === 'pickaxe' && tool.tier >= 3)) return -1;
+    const fast = tool && ((kind === 'tree' && tool.kind === 'axe') || (kind !== 'tree' && tool.kind === 'pickaxe'));
+    if (fast) return HARVEST_COOLDOWN / tool!.speed;
+    return kind === 'tree' ? HARVEST_COOLDOWN * 3.2 : HARVEST_COOLDOWN * 2.2; // a mano: lento
+  }
+  if (tgt.kind === 'block') {
+    if (sim.location === 'cave' || Math.hypot(tgt.x - px, tgt.y - py) > INTERACT_RANGE) return 0;
+    if (effWater(sim, tgt.x, tgt.y) || structureAt(sim, tgt.x, tgt.y)) return 0;
+    if (effLevel(sim, tgt.x, tgt.y) <= BEDROCK_LEVEL) return 0;
+    const c = blockContent(sim, tgt.x, tgt.y);
+    if (c.ore) { // mineral: exige el pico adecuado y tarda algo más
+      if (!(tool && tool.kind === 'pickaxe' && tool.tier >= c.tier)) return -1;
+      const mult = c.ore === 'diamond' ? 2.4 : c.ore === 'gold' ? 2.0 : c.ore === 'iron' ? 1.7 : 1.4;
+      return (HARVEST_COOLDOWN * mult) / tool!.speed;
+    }
+    if (c.item === 'stone') { if (!(tool && tool.kind === 'pickaxe')) return -1; return HARVEST_COOLDOWN / tool!.speed; }
+    return HARVEST_COOLDOWN * 3.4; // tierra/arena/nieve a mano: bastante lento (no se autopica)
+  }
+  const an = sim.animals.find((a) => a.id === tgt.id && a.alive);
+  if (!an || an.type === 'villager' || Math.hypot(an.x - px, an.y - py) > INTERACT_RANGE) return 0;
+  return HARVEST_COOLDOWN;
 }
 
 function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
@@ -571,6 +667,7 @@ function despawnFar(sim: Sim): void {
 function clearVillage(sim: Sim): void {
   sim.village = null;
   sim.villageWalls = new Set();
+  sim.villageBlocked = new Set();
   sim.animals = sim.animals.filter((a) => a.type !== 'villager');
 }
 
@@ -601,11 +698,15 @@ function ensureVillage(sim: Sim, res: StepResult): void {
   const layout = villageLayoutAt(v.cx, v.cy, sim.seed);
   sim.village = { cx: v.cx, cy: v.cy };
   sim.villageWalls = new Set();
+  sim.villageBlocked = new Set();
   for (const h of layout.houses) {
     for (let yy = h.y0; yy < h.y0 + h.h; yy++) for (let xx = h.x0; xx < h.x0 + h.w; xx++) {
       if (isHouseWall(h, xx, yy)) sim.villageWalls.add(keyOf(xx, yy));
+      sim.villageBlocked.add(keyOf(xx, yy)); // toda la huella de la casa
     }
   }
+  const f = layout.farm;
+  for (let yy = f.y0; yy < f.y0 + f.h; yy++) for (let xx = f.x0; xx < f.x0 + f.w; xx++) sim.villageBlocked.add(keyOf(xx, yy));
   const vkey = v.cx + ',' + v.cy;
   if (!sim.villagesLooted.has(vkey)) {
     sim.villagesLooted.add(vkey);
@@ -695,21 +796,28 @@ export function dig(sim: Sim, x: number, y: number): { ok: boolean; floater?: Fl
   const cur = effLevel(sim, x, y);
   if (cur <= BEDROCK_LEVEL) return { ok: false, floater: { text: 'Roca madre', color: 0xff8a8a, x, y } };
   const base = tileAt(x, y, sim.seed);
-  const e = sim.edits.get(keyOf(x, y));
-  const topMat = e ? e.top : terrainTopMaterial(base.terrain);
-  const item = materialItem(topMat);
-  if (item === 'stone') {
-    const tool = toolFor(sim.activeTool);
+  const c = blockContent(sim, x, y);
+  const tool = toolFor(sim.activeTool);
+  if (c.ore) { // minerales del subsuelo: exigen el pico adecuado
+    if (!(tool && tool.kind === 'pickaxe' && tool.tier >= c.tier)) {
+      const need = c.tier >= 3 ? 'pico de hierro' : c.tier === 2 ? 'pico de piedra' : 'un pico';
+      return { ok: false, floater: { text: 'Necesitas ' + need, color: 0xff8a8a, x, y }, sfx: 'hit:stone' };
+    }
+  } else if (c.item === 'stone') {
     if (!(tool && tool.kind === 'pickaxe')) return { ok: false, floater: { text: 'Necesitas un pico', color: 0xff8a8a, x, y }, sfx: 'hit:stone' };
   }
   const newLvl = cur - 1;
-  const newTop = subsurfaceMaterial(base.terrain, base.level - newLvl);
+  // Material del nuevo suelo: si a esa profundidad hay mineral, se ve el mineral;
+  // si no, el subsuelo normal (tierra cerca de la superficie, piedra más hondo).
+  const floorOre = newLvl <= 0 ? subsurfaceOreAt(x, y, newLvl, sim.seed) : null;
+  const newTop = floorOre ?? subsurfaceMaterial(base.terrain, base.level - newLvl);
   sim.edits.set(keyOf(x, y), { lvl: newLvl, top: newTop });
-  addItem(sim, item, 1);
+  addItem(sim, c.item, 1);
   if (newLvl <= WATER_SURFACE) { // ¿queda al nivel del agua junto a un fluido? -> inunda
     for (const [ox, oy] of NB4) if (effWater(sim, x + ox, y + oy)) { sim.floodQueue.push({ x, y }); break; }
   }
-  return { ok: true, sfx: 'break:' + item, edit: { x, y, lvl: newLvl, top: newTop }, item };
+  const sfxMat = c.ore ? nodeSfxMaterial(c.ore) : c.item;
+  return { ok: true, sfx: 'break:' + sfxMat, edit: { x, y, lvl: newLvl, top: newTop }, item: c.item };
 }
 
 // Coloca un bloque de terreno (sube el nivel 1) con el material dado.
@@ -753,6 +861,21 @@ function stepFluids(sim: Sim, res: StepResult): void {
       }
     }
   }
+}
+
+// Reaparecer tras morir: reinicia stats y coloca al jugador en un sitio seguro.
+export function respawn(sim: Sim): void {
+  sim.dead = false;
+  sim.stats = { health: 100, food: 100, thirst: 100, stamina: 100 };
+  sim.location = 'surface';
+  sim.caveSeed = 0;
+  sim.riding = false;
+  clearVillage(sim);
+  const sp = sim.surfaceReturn ?? findSpawn(sim.seed);
+  Position.x[sim.playerId] = sp.x;
+  Position.y[sim.playerId] = sp.y;
+  sim.interactActive = false; sim.interactTarget = null; sim.harvestTimer = 0;
+  sim.jumpTimer = 0; sim.wasOnEntrance = false;
 }
 
 // Dormir: de noche adelanta el tiempo hasta el amanecer.

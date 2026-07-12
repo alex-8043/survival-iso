@@ -4,6 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Survival Iso</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
     <style>
       :root { --fg: #cdd6f4; --gold: #f5c96b; --panel: #1a2016; --line: #2c3626; }
       * { box-sizing: border-box; }
@@ -127,6 +130,11 @@
       #cave-hint { position: fixed; left: 50%; bottom: 150px; transform: translateX(-50%); z-index: 24; display: none; background: rgba(0,0,0,.6); color: var(--gold); font: 13px system-ui, sans-serif; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); pointer-events: none; }
       /* Fundido a negro al entrar/salir de la cueva */
       #cave-fade { position: fixed; inset: 0; z-index: 70; background: #000; display: none; pointer-events: none; }
+      /* Pantalla de muerte */
+      #death { position: fixed; inset: 0; z-index: 80; display: none; align-items: center; justify-content: center; background: rgba(28,4,4,.8); }
+      .death-card { text-align: center; padding: 30px 40px; }
+      .death-card h1 { font-size: 52px; margin: 0 0 8px; color: #e8534a; letter-spacing: 2px; text-shadow: 0 2px 14px rgba(0,0,0,.6); }
+      .death-sub { opacity: .85; margin: 0 0 22px; }
 
       /* Menú de pausa */
       #pause { position: fixed; inset: 0; z-index: 60; display: none; align-items: center; justify-content: center; background: rgba(6,10,6,.72); }
@@ -206,6 +214,83 @@
       .vbtn .vcoin { width: 13px; height: 13px; }
       .vempty { opacity: .7; font-size: 12px; padding: 6px 0; }
       @media (max-width: 560px) { .vcols { grid-template-columns: 1fr; } }
+
+      /* ============================================================
+         ESTILO MINECRAFT — inventario, crafteo, cofre, comercio y hotbar
+         Biseles 3D duros, esquinas rectas, gris piedra y fuente pixel.
+         (Sólo afecta a esos paneles; el resto del juego no cambia.)
+         ============================================================ */
+      :root { --mc-face:#c6c6c6; --mc-hi:#fefefe; --mc-lo:#565656; --mc-ink:#2b2b2b;
+              --mc-slot:#8b8b8b; --mc-slot-lo:#373737; --mc-green:#5fa040; }
+
+      /* Marcos de panel: gris piedra con bisel 3D y borde negro. */
+      #panel .panel-card, #craft .craft-card-wrap, #chest .chest-card, #village .village-card {
+        background: var(--mc-face); border: 0; border-radius: 0; color: var(--mc-ink);
+        font-family: 'VT323', monospace; font-size: 19px; line-height: 1.15;
+        box-shadow: inset 3px 3px 0 var(--mc-hi), inset -3px -3px 0 var(--mc-lo),
+                    0 0 0 3px #1b1b1b, 0 7px 0 3px rgba(0,0,0,.35);
+      }
+      #panel .panel-card *, #craft .craft-card-wrap *, #chest .chest-card *,
+      #village .village-card * { border-radius: 0 !important; }
+      #panel .panel-left { border-right: 3px solid var(--mc-lo); }
+      #panel .pstat-l, #panel .pname, #panel .pempty, #chest .vrow-name,
+      #village .vrow-name, #village .vrow-have, #village .vq-txt,
+      #craft .needs, #craft .craft-name, #craft .craft-empty { color: var(--mc-ink); }
+      #panel .panel-close, #craft .panel-close, #chest .panel-close, #village .panel-close { color: #1b1b1b; opacity: .85; }
+
+      /* Títulos y etiquetas: fuente pixel con sombra dura. */
+      #panel h3, #craft h3, #chest h3, #village h3,
+      #panel .inv-bar-label, #craft .craft-title {
+        font-family: 'Press Start 2P', monospace; font-size: 12px; line-height: 1.5;
+        color: #3a2e10; text-shadow: 1px 1px 0 rgba(255,255,255,.4);
+      }
+      #craft .craft-cat h4, #village .vsec h4 {
+        font-family: 'Press Start 2P', monospace; font-size: 10px; line-height: 1.5;
+        color: #2f6b1f; text-shadow: 1px 1px 0 rgba(255,255,255,.35);
+      }
+
+      /* Ranuras: hueco "hundido" gris (bisel invertido). */
+      #panel .islot, #chest .islot, #panel .pslot, #hotbar .hslot {
+        background: var(--mc-slot) !important; border: 0 !important;
+        box-shadow: inset 2px 2px 0 var(--mc-slot-lo), inset -2px -2px 0 var(--mc-hi);
+      }
+      #panel .inv-bar .islot { background: #7c7c7c !important; }
+      #panel .icount, #chest .icount, #panel .pcount, #hotbar .hcount { color: #fff; text-shadow: 1px 1px 0 #000; }
+      .isprite, .hicon, .craft-out, .ing-ic, .vrow-ic, .pswatch, .craft-title-ic { image-rendering: pixelated; }
+
+      /* Hotbar: barra de piedra clásica con selección blanca. */
+      #hotbar { background: var(--mc-face); border-radius: 0; padding: 4px;
+        box-shadow: inset 2px 2px 0 var(--mc-hi), inset -2px -2px 0 var(--mc-lo), 0 0 0 3px #1b1b1b; }
+      #hotbar .hslot { border-radius: 0; }
+      #hotbar .hslot.sel { background: #9c9c9c !important;
+        box-shadow: 0 0 0 3px #fff, inset 2px 2px 0 var(--mc-slot-lo), inset -2px -2px 0 var(--mc-hi); }
+      #hotbar .hkey { color: #f4f4f4; opacity: .9; text-shadow: 1px 1px 0 #000; }
+
+      /* Botones con bisel (verde = acción). */
+      #craft .craft-btn, #village .vbtn, .inv-headrow .sort-btn {
+        font-family: 'Press Start 2P', monospace; font-size: 9px; line-height: 1.6;
+        border: 0; border-radius: 0; color: #eafbe0; background: var(--mc-green);
+        text-shadow: 1px 1px 0 #29511a;
+        box-shadow: inset 2px 2px 0 #8fd06a, inset -2px -2px 0 #356b22, 0 0 0 2px #1b1b1b;
+      }
+      #craft .craft-btn:hover:not(:disabled), #village .vbtn:hover:not(:disabled),
+      .inv-headrow .sort-btn:hover { background: #6cb54a; }
+      #craft .craft-btn:disabled, #village .vbtn:disabled {
+        background: #9a9a9a; color: #d9d9d9; text-shadow: none;
+        box-shadow: inset 2px 2px 0 #b8b8b8, inset -2px -2px 0 #6f6f6f, 0 0 0 2px #1b1b1b; }
+
+      /* Tarjetas de receta e ingredientes sobre gris. */
+      #craft .craft-card { background: #b2b2b2; border: 0;
+        box-shadow: inset 2px 2px 0 var(--mc-hi), inset -2px -2px 0 var(--mc-lo); color: var(--mc-ink); }
+      #craft .ing { background: #9d9d9d; color: #232; }
+      #craft .ing.ok { color: #1c5a12; } #craft .ing.no { color: #8a1f1f; }
+      #panel .pslot, #panel .pbar { background: #a6a6a6 !important; }
+      #panel .pbar { box-shadow: inset 2px 2px 0 var(--mc-slot-lo); }
+      #village .vquest { background: #b8b8b8; border: 0;
+        box-shadow: inset 2px 2px 0 var(--mc-hi), inset -2px -2px 0 var(--mc-lo); }
+      #village .vrow { border-bottom-color: rgba(0,0,0,.18); }
+      #village .village-coins, #village .vsec .vcoin { filter: none; }
+      #village .village-coins { color: #6b4e12; }
     </style>
   </head>
   <body>
