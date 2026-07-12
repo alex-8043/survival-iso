@@ -1,55 +1,61 @@
 // Punto de entrada del Web Worker: hospeda la simulación y habla el protocolo.
-// En multiplayer, este archivo se reemplaza por un servidor Node que reutiliza
-// createSim/stepSim tal cual (mismo contrato de mensajes).
+// En multiplayer, se reemplaza por un servidor Node que reutiliza world.ts.
 
-import { createSim, stepSim, Position, nodeSnap, invEntries } from './world';
-import { TICK_MS } from '../shared/constants';
+import {
+  createSim,
+  stepSim,
+  consume,
+  drink,
+  timeInfo,
+  animalSnaps,
+  invEntries,
+  playerPos,
+} from './world';
+import { WORLD_SEED, TICK_MS } from '../shared/constants';
 import type { ClientMsg, SimMsg, Snapshot } from '../shared/protocol';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
-
-const SEED = 1337;
-const sim = createSim(SEED);
+const sim = createSim(WORLD_SEED);
 
 function post(msg: SimMsg): void {
   ctx.postMessage(msg);
 }
 
-// Estado inicial del mundo (una sola vez).
-post({
-  t: 'ready',
-  chunk: sim.chunk,
-  nodes: sim.nodes.map(nodeSnap),
-  playerId: sim.playerId,
-  inventory: invEntries(sim.inventory),
-});
+post({ t: 'ready', seed: WORLD_SEED, inventory: invEntries(sim.inventory), stats: sim.stats });
 
 ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
-  const msg = e.data;
-  if (msg.t === 'input') {
-    sim.input = msg.input;
+  const m = e.data;
+  if (m.t === 'input') {
+    sim.input = m.input;
+  } else if (m.t === 'interact') {
+    sim.interactActive = m.active;
+    sim.interactTarget = m.target;
+  } else if (m.t === 'consume') {
+    const r = consume(sim, m.item);
+    if (r.ok) {
+      post({ t: 'inventory', inventory: invEntries(sim.inventory) });
+      if (r.floater) post({ t: 'floater', ...r.floater });
+    }
+  } else if (m.t === 'drink') {
+    drink(sim);
   }
 };
 
 const dt = TICK_MS / 1000;
 setInterval(() => {
   const r = stepSim(sim, dt);
-
+  const p = playerPos(sim);
   const snap: Snapshot = {
     tick: sim.tick,
-    entities: [
-      {
-        id: sim.playerId,
-        x: Position.x[sim.playerId],
-        y: Position.y[sim.playerId],
-        kind: 'player',
-      },
-    ],
-    targetNodeId: r.targetNodeId,
+    px: p.x,
+    py: p.y,
+    animals: animalSnaps(sim),
+    stats: sim.stats,
+    time: timeInfo(sim),
   };
   post({ t: 'snapshot', snap });
 
-  if (r.changedNodes.length) post({ t: 'nodes', nodes: r.changedNodes.map(nodeSnap) });
+  for (const h of r.harvestEvents) post({ t: 'harvest', x: h.x, y: h.y, depleted: h.depleted });
   if (r.inventoryChanged) post({ t: 'inventory', inventory: invEntries(sim.inventory) });
-  if (r.harvested) post({ t: 'harvested', item: r.harvested.item, x: r.harvested.x, y: r.harvested.y });
+  for (const f of r.floaters) post({ t: 'floater', text: f.text, color: f.color, x: f.x, y: f.y });
 }, TICK_MS);

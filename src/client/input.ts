@@ -1,5 +1,5 @@
-// Entrada de teclado -> estado de input. Emite solo cuando cambia y envía el
-// estado completo (un "comando" con forma de red).
+// Teclado -> estado de movimiento (WASD/flechas) + correr (Shift).
+// Las acciones de un solo toque (comer, beber, inventario) se manejan aparte.
 
 import type { InputState } from '../shared/protocol';
 
@@ -12,8 +12,8 @@ const KEY_MAP: Record<string, keyof InputState> = {
   ArrowLeft: 'left',
   KeyD: 'right',
   ArrowRight: 'right',
-  KeyE: 'action',
-  Space: 'action',
+  ShiftLeft: 'sprint',
+  ShiftRight: 'sprint',
 };
 
 export function setupInput(onChange: (state: InputState) => void): void {
@@ -22,7 +22,7 @@ export function setupInput(onChange: (state: InputState) => void): void {
     down: false,
     left: false,
     right: false,
-    action: false,
+    sprint: false,
   };
 
   function apply(code: string, down: boolean): boolean {
@@ -39,7 +39,6 @@ export function setupInput(onChange: (state: InputState) => void): void {
       onChange({ ...state });
     }
   });
-
   window.addEventListener('keyup', (e) => {
     if (apply(e.code, false)) {
       e.preventDefault();

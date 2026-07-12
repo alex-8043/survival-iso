@@ -1,38 +1,49 @@
-// UI de inventario (DOM). Barra inferior con ranuras por ítem.
+// HUD: barras de supervivencia (vida/comida/sed/estamina) y reloj día/hora.
 
-import { ITEMS } from '../shared/items';
-import type { InvEntry } from '../shared/protocol';
+import type { Stats, TimeInfo } from '../shared/protocol';
 
-function hex(color: number): string {
-  return '#' + color.toString(16).padStart(6, '0');
+const BARS = [
+  { key: 'health', label: 'Vida', color: '#e5484d' },
+  { key: 'food', label: 'Comida', color: '#e8a13a' },
+  { key: 'thirst', label: 'Sed', color: '#3aa0e8' },
+  { key: 'stamina', label: 'Estamina', color: '#4cc85a' },
+] as const;
+
+export function initHud(): void {
+  if (document.getElementById('hud-stats')) return;
+
+  const stats = document.createElement('div');
+  stats.id = 'hud-stats';
+  stats.innerHTML = BARS.map(
+    (b) =>
+      `<div class="stat"><span class="stat-label">${b.label}</span>` +
+      `<div class="stat-track"><div class="stat-fill" id="bar-${b.key}" style="background:${b.color}"></div></div></div>`
+  ).join('');
+  document.body.appendChild(stats);
+
+  const clock = document.createElement('div');
+  clock.id = 'hud-clock';
+  clock.innerHTML =
+    '<span id="clock-dot"></span><span id="clock-day"></span><span id="clock-time"></span>';
+  document.body.appendChild(clock);
 }
 
-export function renderInventory(entries: InvEntry[]): void {
-  let bar = document.getElementById('inventory');
-  if (!bar) {
-    bar = document.createElement('div');
-    bar.id = 'inventory';
-    document.body.appendChild(bar);
+export function updateHud(stats: Stats, time: TimeInfo): void {
+  for (const b of BARS) {
+    const el = document.getElementById('bar-' + b.key);
+    if (el) {
+      const v = Math.max(0, Math.min(100, (stats as unknown as Record<string, number>)[b.key]));
+      el.style.width = v + '%';
+    }
   }
-
-  if (!entries.length) {
-    bar.innerHTML =
-      '<div class="inv-empty">Inventario vacío — acércate a un árbol o roca y mantén <b>E</b></div>';
-    return;
-  }
-
-  bar.innerHTML = entries
-    .map((e) => {
-      const def = ITEMS[e.id];
-      const color = def ? hex(def.color) : '#888888';
-      const name = def ? def.name : e.id;
-      return (
-        '<div class="inv-slot">' +
-        `<span class="inv-swatch" style="background:${color}"></span>` +
-        `<span class="inv-name">${name}</span>` +
-        `<span class="inv-count">${e.count}</span>` +
-        '</div>'
-      );
-    })
-    .join('');
+  const h = time.tod * 24;
+  const hh = Math.floor(h);
+  const mm = Math.floor((h - hh) * 60);
+  const isDay = time.tod > 0.27 && time.tod < 0.73;
+  const day = document.getElementById('clock-day');
+  if (day) day.textContent = 'Día ' + time.day;
+  const t = document.getElementById('clock-time');
+  if (t) t.textContent = String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  const dot = document.getElementById('clock-dot');
+  if (dot) dot.style.background = isDay ? '#f5c96b' : '#8aa0e8';
 }
