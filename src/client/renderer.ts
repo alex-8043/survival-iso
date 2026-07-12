@@ -4,7 +4,7 @@
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
 import { TILE_W, TILE_H, MAX_ELEV_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
-import { tileAt, nodeAt, isWater, playerBlocked, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, playerBlocked, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, springAt, type CaveTile } from '../shared/worldgen';
 import { avatarCanvas, type AvatarAction, type Customization, type HeldTool } from './avatar';
 import { ITEMS } from '../shared/items';
 import { getCode, keyLabel } from './keybinds';
@@ -68,9 +68,13 @@ export class GameRenderer {
   target: InteractTarget = null;
   selected: HotbarSel | null = null;
   placeTile: { x: number; y: number } | null = null;
+  stationTarget: { type: string; x: number; y: number } | null = null;
+  readonly structTiles = new Map<string, string>();
+  exitMarker: Container | null = null;
   private lastSentKey = 'x';
   onInteract: (active: boolean, target: InteractTarget) => void = () => {};
   onPlace: (x: number, y: number, item: string) => void = () => {};
+  onOpenStation: (type: string) => void = () => {};
 
   async init(parent: HTMLElement): Promise<void> {
     this.app = new Application();
@@ -86,6 +90,9 @@ export class GameRenderer {
     this.caveDark = new Sprite(Texture.EMPTY);
     this.caveDark.visible = false;
     this.app.stage.addChild(this.caveDark);
+    this.exitMarker = this.makeExitMarker();
+    this.exitMarker.visible = false;
+    this.app.stage.addChild(this.exitMarker);
 
     const cv = this.app.canvas;
     cv.addEventListener('pointermove', (e) => {
@@ -98,6 +105,7 @@ export class GameRenderer {
         this.onPlace(this.placeTile.x, this.placeTile.y, this.selected.item);
         return;
       }
+      if (this.stationTarget) { this.onOpenStation(this.stationTarget.type); return; }
       this.active = true;
       this.emitInteract();
     });
@@ -199,6 +207,8 @@ export class GameRenderer {
   }
 
   setStructures(list: Structure[]): void {
+    this.structTiles.clear();
+    for (const s of list) this.structTiles.set(s.x + ',' + s.y, s.type);
     const seen = new Set<number>();
     for (const s of list) {
       seen.add(s.id);
@@ -320,7 +330,12 @@ export class GameRenderer {
         if (relX < -halfW || relX > halfW || relY < -halfH || relY > halfH) continue;
         const x = ptx + dx, y = pty + dy;
         const info = cave ? caveTile(x, y, this.caveSeed) : tileAt(x, y, this.seed);
-        const base = cave ? (info.elevation > 0.01 ? CAVE_WALL : CAVE_FLOOR) : (TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f);
+        let base: number;
+        let ck: string = '';
+        if (cave) {
+          ck = (info as CaveTile).kind;
+          base = ck === 'wall' ? CAVE_WALL : ck === 'lava' ? 0xd83a10 : ck === 'water' ? 0x2f6aa0 : CAVE_FLOOR;
+        } else base = TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f;
         const s = gridToScreen(x, y);
         const lift = info.elevation * MAX_ELEV_PX, topY = s.y - lift;
         if (lift > 3) {
@@ -328,7 +343,10 @@ export class GameRenderer {
           g.poly([s.x, topY + hh, s.x + hw, topY, s.x + hw, s.y, s.x, s.y + hh]).fill({ color: darker(base, 0.45) });
         }
         g.poly([s.x, topY - hh, s.x + hw, topY, s.x, topY + hh, s.x - hw, topY]).fill({ color: base });
+        if (cave && ck === 'lava') g.poly([s.x, topY - hh * 0.5, s.x + hw * 0.5, topY, s.x, topY + hh * 0.5, s.x - hw * 0.5, topY]).fill({ color: 0xff9b3a, alpha: 0.85 });
+        if (cave && ck === 'water') g.poly([s.x, topY - hh * 0.55, s.x + hw * 0.55, topY, s.x, topY + hh * 0.55, s.x - hw * 0.55, topY]).fill({ color: 0x4f95c8, alpha: 0.7 });
         if (!cave && caveEntranceAt(x, y, this.seed)) this.drawEntrance(g, s.x, topY);
+        else if (!cave && springAt(x, y, this.seed)) this.drawSpring(g, s.x, topY);
       }
     }
   }
@@ -339,6 +357,28 @@ export class GameRenderer {
     g.ellipse(cx, my - 4, 7, 8).fill({ color: 0x05050a });
     g.ellipse(cx, my, 10, 5).fill({ color: 0x07070c });
     g.ellipse(cx, my - 1, 13, 8).stroke({ width: 2, color: 0xe8c06a, alpha: 0.5 });
+  }
+
+  private drawSpring(g: Graphics, cx: number, topY: number): void {
+    const hw = TILE_W / 2, hh = TILE_H / 2;
+    g.poly([cx, topY - hh, cx + hw, topY, cx, topY + hh, cx - hw, topY]).fill({ color: 0x2a8fb0 });
+    g.ellipse(cx, topY, hw * 0.58, hh * 0.58).fill({ color: 0x58c8e0 });
+    g.ellipse(cx, topY, hw * 0.3, hh * 0.3).fill({ color: 0x9fe8f4, alpha: 0.8 });
+  }
+
+  private makeExitMarker(): Container {
+    const c = new Container();
+    const g = new Graphics();
+    g.rect(-7, -130, 14, 130).fill({ color: 0x7dffb0, alpha: 0.15 });
+    g.rect(-3, -130, 6, 130).fill({ color: 0xe0ffee, alpha: 0.28 });
+    g.ellipse(0, 0, 22, 11).fill({ color: 0x2b8a55, alpha: 0.4 });
+    g.ellipse(0, 0, 22, 11).stroke({ width: 3, color: 0x8dffbe, alpha: 0.95 });
+    g.poly([0, -34, 12, -18, 5, -18, 5, -4, -5, -4, -5, -18, -12, -18]).fill({ color: 0xe0ffee });
+    c.addChild(g);
+    const t = new Text({ text: 'SALIDA', style: { fill: 0xdfffe9, fontSize: 12, fontFamily: 'system-ui, sans-serif', fontWeight: '700', stroke: { color: 0x0b3b1f, width: 3 } } });
+    t.anchor.set(0.5, 1); t.y = -40;
+    c.addChild(t);
+    return c;
   }
 
   private makeNode(kind: string): Container {
@@ -492,6 +532,15 @@ export class GameRenderer {
     this.world.x = this.app.screen.width / 2 - ps.x;
     this.world.y = this.app.screen.height / 2 - py;
 
+    if (this.exitMarker) {
+      if (this.loc === 'cave') {
+        const e0 = gridToScreen(0, 0);
+        this.exitMarker.visible = true;
+        this.exitMarker.x = this.world.x + e0.x;
+        this.exitMarker.y = this.world.y + e0.y - this.elevAtL(0, 0) * MAX_ELEV_PX;
+      } else this.exitMarker.visible = false;
+    }
+
     // animación
     const spd = Math.hypot(this.prx - this.lastPrx, this.pry - this.lastPry) / dt;
     this.lastPrx = this.prx; this.lastPry = this.pry;
@@ -548,6 +597,7 @@ export class GameRenderer {
     this.ghost.clear();
     let next: InteractTarget = null;
     this.placeTile = null;
+    this.stationTarget = null;
 
     if (this.mouseX >= 0) {
       const wx = this.mouseX - this.world.x, wy = this.mouseY - this.world.y;
@@ -560,16 +610,23 @@ export class GameRenderer {
         this.ghost.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).fill({ color: valid ? 0x8bd17c : 0xe06666, alpha: 0.35 }).stroke({ width: 2, color: valid ? 0x8bd17c : 0xe06666, alpha: 0.9 });
         this.app.canvas.style.cursor = 'cell';
       } else {
-        let bestD = 24;
-        for (const [id, ra] of this.animals) {
-          const d = Math.hypot(ra.sprite.x - wx, ra.sprite.y - 8 - wy);
-          if (d < bestD && Math.hypot(ra.rx - this.prx, ra.ry - this.pry) <= INTERACT_RANGE) { bestD = d; next = { kind: 'animal', id }; }
+        const pick = this.pickTile(wx, wy);
+        const st = this.structTiles.get(pick.x + ',' + pick.y);
+        if (st && (st === 'crafting_table' || st === 'furnace' || st === 'forge') && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) {
+          this.stationTarget = { type: st, x: pick.x, y: pick.y };
+          this.app.canvas.style.cursor = 'pointer';
+        } else {
+          let bestD = 24;
+          for (const [id, ra] of this.animals) {
+            const d = Math.hypot(ra.sprite.x - wx, ra.sprite.y - 8 - wy);
+            if (d < bestD && Math.hypot(ra.rx - this.prx, ra.ry - this.pry) <= INTERACT_RANGE) { bestD = d; next = { kind: 'animal', id }; }
+          }
+          if (!next) {
+            const key = this.nodeKey(pick.x, pick.y);
+            if (!this.depleted.has(key) && this.nodeKindAtL(pick.x, pick.y) && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) next = { kind: 'node', x: pick.x, y: pick.y };
+          }
+          this.app.canvas.style.cursor = next ? 'pointer' : 'default';
         }
-        if (!next) {
-          const t = this.pickTile(wx, wy), key = this.nodeKey(t.x, t.y);
-          if (!this.depleted.has(key) && this.nodeKindAtL(t.x, t.y) && Math.hypot(t.x - this.prx, t.y - this.pry) <= INTERACT_RANGE) next = { kind: 'node', x: t.x, y: t.y };
-        }
-        this.app.canvas.style.cursor = next ? 'pointer' : 'default';
       }
     }
     this.target = next;
@@ -582,11 +639,16 @@ export class GameRenderer {
       const s = gridToScreen(hx, hy), hw = TILE_W / 2, hh = TILE_H / 2, yy = s.y - hl;
       this.highlight.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).stroke({ width: 2, color: next.kind === 'animal' ? 0xff6b6b : 0xf5c96b, alpha: 0.95 });
     }
+    if (this.stationTarget) {
+      const st = this.stationTarget;
+      const sp = gridToScreen(st.x, st.y), hw = TILE_W / 2, hh = TILE_H / 2, yy = sp.y - this.elevAtL(st.x, st.y) * MAX_ELEV_PX;
+      this.highlight.poly([sp.x, yy - hh, sp.x + hw, yy, sp.x, yy + hh, sp.x - hw, yy]).stroke({ width: 2, color: 0x8bd1ff, alpha: 0.95 });
+    }
 
-    const key = placing ? 'p' : next ? (next.kind === 'node' ? 'n' + next.x + ',' + next.y : 'a' + next.id) : '-';
+    const key = placing ? 'p' : this.stationTarget ? 's' + this.stationTarget.x + ',' + this.stationTarget.y : next ? (next.kind === 'node' ? 'n' + next.x + ',' + next.y : 'a' + next.id) : '-';
     if (key !== this.lastSentKey) {
       this.lastSentKey = key;
-      this.app.canvas.setAttribute('data-target', placing ? 'place' : next ? next.kind : 'none');
+      this.app.canvas.setAttribute('data-target', placing ? 'place' : this.stationTarget ? 'station' : next ? next.kind : 'none');
       if (!placing) this.emitInteract();
     }
   }

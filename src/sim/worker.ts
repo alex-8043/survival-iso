@@ -2,7 +2,7 @@
 
 import {
   createSim, createSimFromSave, serializeSim, stepSim, consume, drink, craft, place,
-  timeInfo, animalSnaps, invEntries, playerPos, onWaterOf, toggleCave, onEntranceOf,
+  timeInfo, animalSnaps, invEntries, playerPos, onWaterOf, toggleCave, onEntranceOf, bestFood,
 } from './world';
 import type { Sim, StepResult } from './world';
 import { WORLD_SEED, TICK_MS } from '../shared/constants';
@@ -59,9 +59,16 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     }
     if (r.floater) post({ t: 'floater', ...r.floater });
   } else if (m.t === 'consume') {
-    const r = consume(sim, m.item);
-    if (r.ok) { post({ t: 'inventory', inventory: invEntries(sim.inventory) }); if (r.floater) post({ t: 'floater', ...r.floater }); }
-  } else if (m.t === 'drink') drink(sim);
+    const item = m.item ?? bestFood(sim);
+    if (item) {
+      const r = consume(sim, item);
+      if (r.ok) post({ t: 'inventory', inventory: invEntries(sim.inventory) });
+      if (r.floater) post({ t: 'floater', ...r.floater });
+    }
+  } else if (m.t === 'drink') {
+    const r = drink(sim);
+    if (r.floater) post({ t: 'floater', ...r.floater });
+  }
   else if (m.t === 'toggleCave') {
     const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false };
     toggleCave(sim, res);

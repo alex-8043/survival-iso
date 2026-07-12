@@ -87,7 +87,7 @@ export type ClientMsg =
   | { t: 'selectTool'; item: string | null }
   | { t: 'craft'; id: string }
   | { t: 'place'; item: string; x: number; y: number }
-  | { t: 'consume'; item: string }
+  | { t: 'consume'; item?: string }
   | { t: 'drink' }
   | { t: 'toggleCave' }
   | { t: 'requestSave' };

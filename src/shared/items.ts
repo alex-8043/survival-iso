@@ -35,7 +35,8 @@ export interface ItemDef {
 export const ITEMS: Record<string, ItemDef> = {
   wood: { id: 'wood', name: 'Madera', color: 0x9c6b3f },
   stone: { id: 'stone', name: 'Piedra', color: 0x9aa0ab },
-  meat: { id: 'meat', name: 'Carne', color: 0xb5462f, food: 28 },
+  meat: { id: 'meat', name: 'Carne cruda', color: 0xd05a4a, food: 12 },
+  cooked_meat: { id: 'cooked_meat', name: 'Carne cocinada', color: 0x9a5a2f, food: 40 },
   leather: { id: 'leather', name: 'Cuero', color: 0x7a5433 },
   wool: { id: 'wool', name: 'Lana', color: 0xe8e6de },
   feather: { id: 'feather', name: 'Pluma', color: 0xd7d2c8 },

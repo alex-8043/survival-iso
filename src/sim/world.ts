@@ -22,7 +22,7 @@ import {
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, CAVE_R } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, springAt, CAVE_R } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
 import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor } from '../shared/items';
 import type { AnimalType } from '../shared/items';
@@ -169,8 +169,9 @@ function structureAt(sim: Sim, x: number, y: number): Structure | undefined {
 function blockedAt(sim: Sim, x: number, y: number): boolean {
   const tx = Math.round(x);
   const ty = Math.round(y);
-  if (sim.location === 'cave') return caveTile(tx, ty, sim.caveSeed).wall;
+  if (sim.location === 'cave') return !caveTile(tx, ty, sim.caveSeed).passable; // muro/lava/agua
   if (playerBlocked(tileAt(tx, ty, sim.seed).terrain)) return true;
+  if (springAt(tx, ty, sim.seed)) return true; // no se camina sobre el manantial
   const s = structureAt(sim, tx, ty);
   return !!(s && ITEMS[s.type]?.solid);
 }
@@ -433,22 +434,40 @@ export function place(sim: Sim, item: string, x: number, y: number): { ok: boole
 
 export function consume(sim: Sim, item: string): { ok: boolean; floater?: Floater } {
   const def = ITEMS[item];
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
   if (!def || !def.food || !(sim.inventory[item] > 0)) return { ok: false };
+  if (sim.stats.food >= 99.5) return { ok: false, floater: { text: 'Estás lleno', color: 0xffd05a, x: px, y: py } };
   sim.inventory[item] -= 1;
   sim.stats.food = Math.min(100, sim.stats.food + def.food);
-  return { ok: true, floater: { text: '+' + def.food + ' comida', color: 0x8bc34a, x: Position.x[sim.playerId], y: Position.y[sim.playerId] } };
+  return { ok: true };
 }
 
-export function drink(sim: Sim): boolean {
+// Devuelve el mejor alimento disponible (cocinado antes que crudo).
+export function bestFood(sim: Sim): string | null {
+  const order = ['cooked_meat', 'meat'];
+  for (const id of order) if ((sim.inventory[id] || 0) > 0) return id;
+  for (const id of Object.keys(sim.inventory)) if (ITEMS[id]?.food && sim.inventory[id] > 0) return id;
+  return null;
+}
+
+export function drink(sim: Sim): { ok: boolean; floater?: Floater } {
   const px = Math.round(Position.x[sim.playerId]);
   const py = Math.round(Position.y[sim.playerId]);
-  for (let ox = -1; ox <= 1; ox++)
-    for (let oy = -1; oy <= 1; oy++)
-      if (isWater(tileAt(px + ox, py + oy, sim.seed).terrain)) {
-        sim.stats.thirst = Math.min(100, sim.stats.thirst + 35);
-        return true;
-      }
-  return false;
+  const fx = Position.x[sim.playerId], fy = Position.y[sim.playerId];
+  // Agua potable: manantial (superficie) o charca de cueva.
+  for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+    const tx = px + ox, ty = py + oy;
+    const potable = sim.location === 'cave' ? caveTile(tx, ty, sim.caveSeed).kind === 'water' : springAt(tx, ty, sim.seed);
+    if (potable) { sim.stats.thirst = Math.min(100, sim.stats.thirst + 32); return { ok: true, floater: { text: '+ Sed', color: 0x6ad0ff, x: fx, y: fy } }; }
+  }
+  // Agua de mar: salada, hace daño.
+  if (sim.location !== 'cave') for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+    if (isWater(tileAt(px + ox, py + oy, sim.seed).terrain)) {
+      sim.stats.health = Math.max(0, sim.stats.health - 4);
+      return { ok: true, floater: { text: '¡Agua salada! -vida', color: 0xff6a6a, x: fx, y: fy } };
+    }
+  }
+  return { ok: false };
 }
 
 export function timeInfo(sim: Sim): TimeInfo {

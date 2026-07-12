@@ -40,16 +40,27 @@
       .sw.sel { border-color: var(--gold); box-shadow: 0 0 0 1px #000 inset; }
       .opt-list { display: flex; flex-direction: column; gap: 10px; align-items: center; }
 
-      /* HUD: iconos de supervivencia (abajo, sobre la hotbar) */
-      #hud-stats { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); z-index: 22; display: grid; grid-template-columns: auto auto; gap: 3px 26px; background: rgba(0,0,0,.3); padding: 7px 12px; border-radius: 10px; }
-      .hud-group { display: flex; gap: 1px; }
-      .hud-ic { width: 13px; height: 13px; background-size: contain; background-repeat: no-repeat; background-position: center; }
+      /* HUD: vida+estamina a la izquierda de la hotbar, hambre+sed a la derecha */
+      #hud-left, #hud-right { position: fixed; bottom: 16px; z-index: 22; display: flex; flex-direction: column; gap: 3px; }
+      #hud-left { right: calc(50% + 248px); align-items: flex-end; }
+      #hud-right { left: calc(50% + 248px); align-items: flex-start; }
+      .hud-row { display: flex; gap: 2px; }
+      .hud-ic { width: 20px; height: 20px; background-size: contain; background-repeat: no-repeat; background-position: center; }
 
       /* Feed de recolección (izquierda) */
-      #pickup-feed { position: fixed; left: 12px; top: 50%; transform: translateY(-50%); z-index: 21; display: flex; flex-direction: column; gap: 5px; pointer-events: none; }
-      .pf-row { display: flex; align-items: center; gap: 7px; background: rgba(0,0,0,.42); padding: 4px 10px; border-radius: 7px; font-size: 13px; font-weight: 600; opacity: 0; transform: translateX(-12px); transition: opacity .25s, transform .25s; }
+      #pickup-feed { position: fixed; left: 12px; top: 46%; transform: translateY(-50%); z-index: 21; display: flex; flex-direction: column; gap: 5px; pointer-events: none; }
+      .pf-row { display: flex; align-items: center; gap: 6px; background: rgba(0,0,0,.42); padding: 3px 10px 3px 5px; border-radius: 7px; font-size: 13px; font-weight: 600; opacity: 0; transform: translateX(-12px); transition: opacity .25s, transform .25s; }
       .pf-row.show { opacity: 1; transform: translateX(0); }
-      .pf-dot { width: 11px; height: 11px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.4); }
+      .pf-ic { width: 22px; height: 22px; background-size: contain; background-repeat: no-repeat; background-position: center; }
+
+      /* Minimapa */
+      #minimap { position: fixed; left: 12px; top: 12px; z-index: 23; border: 2px solid rgba(0,0,0,.5); border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,.4); background: #0c110b; }
+      #minimap-cv { display: block; width: 154px; height: 154px; image-rendering: pixelated; }
+      #minimap-hint { position: absolute; right: 3px; bottom: 2px; font-size: 10px; color: #fff; opacity: .6; background: rgba(0,0,0,.4); padding: 0 4px; border-radius: 3px; }
+      #bigmap { position: fixed; inset: 0; z-index: 58; display: none; align-items: center; justify-content: center; background: rgba(6,10,6,.72); }
+      .bigmap-card { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+      .bigmap-card h3 { margin: 0 0 10px; }
+      #bigmap-cv { display: block; image-rendering: pixelated; border-radius: 6px; max-width: 86vw; max-height: 74vh; }
       #hud-clock { position: fixed; right: 12px; top: 12px; z-index: 20; display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,.34); padding: 8px 12px; border-radius: 10px; font-size: 14px; }
       #clock-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px rgba(245,201,107,.6); }
       #clock-day { font-weight: 700; } #clock-time { opacity: .85; }
@@ -129,6 +140,23 @@
       .kb-key { min-width: 96px; font-size: 12px; font-weight: 700; color: var(--gold); background: rgba(245,201,107,.12); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
       .kb-key:hover { background: rgba(245,201,107,.22); }
       .kb-key.listening { color: #fff; background: rgba(245,201,107,.32); }
+
+      /* Inventario con ranuras + barra de acceso rápido */
+      .inv-grid, .inv-bar { display: grid; grid-template-columns: repeat(9, 1fr); gap: 4px; }
+      .inv-bar-label { margin: 12px 0 5px; font-size: 12px; opacity: .7; }
+      .islot { position: relative; aspect-ratio: 1; background: rgba(255,255,255,.05); border: 1px solid var(--line); border-radius: 6px; display: flex; align-items: center; justify-content: center; }
+      .inv-bar .islot { background: rgba(245,201,107,.08); border-color: rgba(245,201,107,.3); }
+      .isprite { width: 84%; height: 84%; background-size: contain; background-repeat: no-repeat; background-position: center; }
+      .icount { position: absolute; bottom: 0; right: 3px; font-size: 11px; font-weight: 700; color: var(--gold); text-shadow: 0 1px 2px #000; }
+
+      /* Crafteo: cabecera, sprites de salida e ingredientes */
+      .craft-title { display: flex; align-items: center; gap: 8px; }
+      .craft-title-ic { width: 24px; height: 24px; background-size: contain; background-repeat: no-repeat; background-position: center; }
+      .craft-head { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+      .craft-out { width: 26px; height: 26px; background-size: contain; background-repeat: no-repeat; background-position: center; }
+      .ing { display: inline-flex; align-items: center; gap: 3px; }
+      .ing-ic { width: 15px; height: 15px; background-size: contain; background-repeat: no-repeat; background-position: center; }
+      .craft-empty { opacity: .7; font-size: 13px; }
     </style>
   </head>
   <body>

@@ -7,9 +7,10 @@ import { initHud, updateHud, pushPickup } from './client/hud';
 import { showMenu } from './client/menu';
 import { togglePanel, isPanelOpen, updatePanel, setPanelCustom } from './client/panel';
 import { initHotbar, updateHotbar, type HotbarSel } from './client/hotbar';
-import { initCraft, toggleCraft, updateCraft } from './client/craftpanel';
+import { initCraft, toggleCraft, updateCraft, openStationCraft } from './client/craftpanel';
 import { initControls, toggleControls, showControls } from './client/controls';
 import { initPause, togglePause, isPaused, isCapturing } from './client/pausemenu';
+import { initMinimap, updateMinimap, toggleBigMap } from './client/minimap';
 import { loadBinds, actionFor } from './client/keybinds';
 import { loadGame, saveGame } from './client/save';
 import { startMusic, toggleMusic, isMusicOn } from './client/music';
@@ -81,7 +82,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
       for (const e of lastInv) prev[e.id] = e.count;
       for (const e of inv) {
         const d = e.count - (prev[e.id] || 0);
-        if (d > 0) pushPickup('+' + d + ' ' + (ITEMS[e.id]?.name || e.id), ITEMS[e.id]?.color ?? 0xffffff);
+        if (d > 0) pushPickup('+' + d + ' ' + (ITEMS[e.id]?.name || e.id), e.id);
       }
     }
     lastInv = inv;
@@ -98,6 +99,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
         renderer.start(m.seed, custom, save?.px ?? 0, save?.py ?? 0);
         renderer.setStructures(m.structures);
         renderer.setLayer(m.loc, m.caveSeed);
+        initMinimap(m.seed);
         lastStats = m.stats;
         refreshInv(m.inventory, true);
         break;
@@ -105,6 +107,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
         renderer.setLayer(m.snap.loc, m.snap.caveSeed);
         renderer.applySnapshot(m.snap);
         renderer.setEntranceHint(m.snap.onEntrance);
+        updateMinimap(m.snap.px, m.snap.py, m.snap.loc, m.snap.caveSeed);
         lastStats = m.snap.stats;
         if (m.snap.tick % 6 === 0) updateHud(m.snap.stats, m.snap.time);
         if (isPanelOpen()) updatePanel(lastInv, lastStats);
@@ -134,6 +137,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
 
   renderer.onInteract = (active, target) => worker.postMessage({ t: 'interact', active, target });
   renderer.onPlace = (x, y, item) => worker.postMessage({ t: 'place', item, x, y });
+  renderer.onOpenStation = (type) => openStationCraft(type);
 
   initHotbar((sel: HotbarSel) => {
     renderer.selected = sel;
@@ -163,9 +167,10 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
     switch (a) {
       case 'inventory': togglePanel(); updatePanel(lastInv, lastStats); break;
       case 'craft': toggleCraft(); break;
+      case 'map': toggleBigMap(); break;
       case 'jump': renderer.jump(); break;
       case 'cave': worker.postMessage({ t: 'toggleCave' }); break;
-      case 'eat': worker.postMessage({ t: 'consume', item: 'meat' }); break;
+      case 'eat': worker.postMessage({ t: 'consume' }); break;
       case 'drink': worker.postMessage({ t: 'drink' }); break;
       case 'save': requestSave(); break;
       case 'music': toggleMusic(); break;

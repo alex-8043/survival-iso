@@ -2,16 +2,17 @@
 // y correr (Shift) son fijos; el resto de acciones son reasignables.
 
 export type Action =
-  | 'inventory' | 'craft' | 'jump' | 'cave' | 'eat' | 'drink' | 'save' | 'music' | 'controls' | 'pause';
+  | 'inventory' | 'craft' | 'map' | 'jump' | 'cave' | 'eat' | 'drink' | 'save' | 'music' | 'controls' | 'pause';
 
-export const ACTIONS: Action[] = ['inventory', 'craft', 'jump', 'cave', 'eat', 'drink', 'save', 'music', 'controls', 'pause'];
+export const ACTIONS: Action[] = ['inventory', 'craft', 'map', 'jump', 'cave', 'eat', 'drink', 'save', 'music', 'controls', 'pause'];
 
 export const ACTION_LABELS: Record<Action, string> = {
   inventory: 'Inventario',
-  craft: 'Crafteo',
+  craft: 'Crafteo básico',
+  map: 'Mapa grande',
   jump: 'Saltar',
   cave: 'Entrar / salir de cueva',
-  eat: 'Comer carne',
+  eat: 'Comer',
   drink: 'Beber agua',
   save: 'Guardar partida',
   music: 'Música',
@@ -22,17 +23,18 @@ export const ACTION_LABELS: Record<Action, string> = {
 const DEFAULTS: Record<Action, string> = {
   inventory: 'KeyE',
   craft: 'Tab',
+  map: 'KeyM',
   jump: 'Space',
   cave: 'KeyR',
   eat: 'KeyF',
   drink: 'KeyG',
   save: 'KeyK',
-  music: 'KeyM',
+  music: 'KeyN',
   controls: 'KeyH',
   pause: 'Escape',
 };
 
-const LS = 'survival-keybinds';
+const LS = 'survival-keybinds-v2';
 let binds: Record<Action, string> = { ...DEFAULTS };
 
 export function loadBinds(): void {

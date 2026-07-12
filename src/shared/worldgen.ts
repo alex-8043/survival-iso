@@ -77,13 +77,13 @@ export function playerBlocked(terrain: Terrain): boolean {
 // El interior es una sala acotada, determinista a partir de la semilla de cueva.
 // ---------------------------------------------------------------------------
 
-export const CAVE_R = 26; // radio de la sala (tiles) — cuevas amplias
+export const CAVE_R = 44; // borde exterior de la cueva (tiles) — cuevas grandes
 
-// Hay una entrada de cueva en ciertos tiles de montaña o roca (raras).
+// Entradas de cueva: muy raras, en montaña o roca.
 export function caveEntranceAt(x: number, y: number, seed: number): boolean {
   const t = tileAt(x, y, seed).terrain;
   if (t !== TERRAIN.MOUNTAIN && t !== TERRAIN.ROCK) return false;
-  return hash2(x, y, (seed ^ 0x5eed) | 0) < 0.016;
+  return hash2(x, y, (seed ^ 0x5eed) | 0) < 0.006;
 }
 
 // Semilla determinista de la cueva a partir de las coordenadas de su entrada.
@@ -91,30 +91,38 @@ export function caveSeedFor(ex: number, ey: number, seed: number): number {
   return (Math.imul(ex | 0, 73856093) ^ Math.imul(ey | 0, 19349663) ^ (seed | 0)) | 0;
 }
 
-export interface CaveTile { terrain: Terrain; elevation: number; passable: boolean; wall: boolean; }
+export type CaveKind = 'floor' | 'wall' | 'lava' | 'water';
+export interface CaveTile { kind: CaveKind; terrain: Terrain; elevation: number; passable: boolean; wall: boolean; }
 
-// Interior de cueva: suelo transitable con muros/pilares dispersos. El centro
-// (cerca de 0,0) siempre es suelo: ahí está la salida.
+const CAVE_WALL: CaveTile = { kind: 'wall', terrain: 1, elevation: 0.55, passable: false, wall: true };
+
+// Interior de cueva: cavernas y pasillos orgánicos con desniveles, lava y agua.
+// El centro (0,0) siempre es suelo despejado: ahí está la salida.
 export function caveTile(x: number, y: number, cseed: number): CaveTile {
   const d = Math.hypot(x, y);
-  // borde irregular (no un círculo perfecto)
-  const edge = CAVE_R + fbm((x + 12) * 0.09, (y - 12) * 0.09, (cseed ^ 0x99) | 0, 2) * 8 - 4;
-  let wall = d >= edge;
-  if (!wall && d > 3) {
-    const n = fbm((x + 40) * 0.14, (y - 40) * 0.14, cseed, 3);
-    if (n > 0.72) wall = true; // pilares dispersos
+  const edge = CAVE_R + fbm((x + 12) * 0.05, (y - 12) * 0.05, (cseed ^ 0x99) | 0, 2) * 12 - 6;
+  if (d >= edge) return CAVE_WALL;
+  if (d < 3.2) return { kind: 'floor', terrain: 0, elevation: 0.04, passable: true, wall: false };
+  const o = fbm(x * 0.085, y * 0.085, cseed, 4);
+  if (o <= 0.44) return CAVE_WALL;
+  if (d > 9) {
+    const lv = fbm((x + 300) * 0.12, (y - 200) * 0.12, (cseed ^ 0x77) | 0, 3);
+    if (lv > 0.79) return { kind: 'lava', terrain: 0, elevation: 0, passable: false, wall: false };
+    const wt = fbm((x - 260) * 0.11, (y + 170) * 0.11, (cseed ^ 0x33) | 0, 3);
+    if (wt > 0.8) return { kind: 'water', terrain: 0, elevation: 0, passable: false, wall: false };
   }
-  return { terrain: wall ? 1 : 0, elevation: wall ? 0.5 : 0, passable: !wall, wall };
+  const e = fbm(x * 0.06, y * 0.06, (cseed ^ 0x9) | 0, 3);
+  return { kind: 'floor', terrain: 0, elevation: Math.max(0, e - 0.42) * 0.7, passable: true, wall: false };
 }
 
-// Nodos minables dentro de la cueva: piedra, carbón y hierro.
+// Nodos minables (mucho más escasos que antes), sólo en suelo.
 export function caveNodeAt(x: number, y: number, cseed: number): NodeKind | null {
-  if (!caveTile(x, y, cseed).passable) return null;
-  if (Math.abs(x) <= 1 && Math.abs(y) <= 1) return null; // salida despejada
+  if (caveTile(x, y, cseed).kind !== 'floor') return null;
+  if (Math.abs(x) <= 2 && Math.abs(y) <= 2) return null;
   const r = hash2(x, y, (cseed ^ 0x1f7) | 0);
-  if (r < 0.05) return 'iron';
-  if (r < 0.14) return 'coal';
-  if (r < 0.3) return 'rock';
+  if (r < 0.02) return 'iron';
+  if (r < 0.055) return 'coal';
+  if (r < 0.13) return 'rock';
   return null;
 }
 
@@ -122,15 +130,22 @@ export type CaveDecor = 'stalagmite' | 'crystal' | 'mushroom' | 'bones' | 'rubbl
 
 // Decoración no interactiva del suelo de la cueva.
 export function caveDecorAt(x: number, y: number, cseed: number): CaveDecor | null {
-  if (!caveTile(x, y, cseed).passable) return null;
+  if (caveTile(x, y, cseed).kind !== 'floor') return null;
   if (Math.abs(x) <= 2 && Math.abs(y) <= 2) return null;
   if (caveNodeAt(x, y, cseed)) return null;
   const r = hash2(x, y, (cseed ^ 0x2ac) | 0);
-  if (r > 0.14) return null;
+  if (r > 0.1) return null;
   const s = hash2(x + 7, y - 3, (cseed ^ 0x51) | 0);
   if (s < 0.34) return 'stalagmite';
   if (s < 0.56) return 'crystal';
   if (s < 0.76) return 'mushroom';
   if (s < 0.9) return 'rubble';
   return 'bones';
+}
+
+// Manantiales: pequeñas fuentes de agua dulce (potable) en tierra firme. Raros.
+export function springAt(x: number, y: number, seed: number): boolean {
+  const t = tileAt(x, y, seed).terrain;
+  if (t !== TERRAIN.GRASS && t !== TERRAIN.FOREST) return false;
+  return hash2(x, y, (seed ^ 0x5b1e) | 0) < 0.005;
 }

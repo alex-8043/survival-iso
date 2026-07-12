@@ -27,7 +27,7 @@ function isoCube(ctx: CanvasRenderingContext2D, base: number): void {
   poly(ctx, [cx + 11, ty + 6, cx, ty + 12, cx, ty + 12 + mh, cx + 11, ty + 6 + mh], darker(base, 0.42));
 }
 
-const DRAW: Record<string, (ctx: CanvasRenderingContext2D) => void> = {
+export const DRAW: Record<string, (ctx: CanvasRenderingContext2D) => void> = {
   crafting_table(ctx) {
     rr(ctx, 6, 9, 3, 15, 1, '#5a3a1e');
     rr(ctx, 21, 9, 3, 15, 1, '#5a3a1e');

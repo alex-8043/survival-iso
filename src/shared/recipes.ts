@@ -10,7 +10,7 @@ export interface Recipe {
   cat: string;
 }
 
-export const RECIPE_CATS = ['Herramientas', 'Armas', 'Armaduras', 'Fundición', 'Construcción', 'Estaciones', 'Vehículos'];
+export const RECIPE_CATS = ['Herramientas', 'Armas', 'Armaduras', 'Fundición', 'Cocina', 'Construcción', 'Estaciones', 'Vehículos'];
 
 export const RECIPES: Recipe[] = [
   { id: 'wood_axe', name: 'Hacha de madera', out: { item: 'wood_axe', count: 1 }, ingredients: { wood: 3 }, cat: 'Herramientas' },
@@ -27,6 +27,7 @@ export const RECIPES: Recipe[] = [
   { id: 'iron_helmet', name: 'Casco de hierro', out: { item: 'iron_helmet', count: 1 }, ingredients: { iron_ingot: 5 }, station: 'forge', cat: 'Armaduras' },
   { id: 'iron_chest', name: 'Pechera de hierro', out: { item: 'iron_chest', count: 1 }, ingredients: { iron_ingot: 8 }, station: 'forge', cat: 'Armaduras' },
   { id: 'iron_ingot', name: 'Fundir hierro', out: { item: 'iron_ingot', count: 1 }, ingredients: { iron_ore: 1, coal: 1 }, station: 'furnace', cat: 'Fundición' },
+  { id: 'cooked_meat', name: 'Cocinar carne', out: { item: 'cooked_meat', count: 1 }, ingredients: { meat: 1, wood: 1 }, station: 'furnace', cat: 'Cocina' },
   { id: 'wood_block', name: 'Bloque de madera ×4', out: { item: 'wood_block', count: 4 }, ingredients: { wood: 1 }, cat: 'Construcción' },
   { id: 'stone_block', name: 'Bloque de piedra ×4', out: { item: 'stone_block', count: 4 }, ingredients: { stone: 1 }, cat: 'Construcción' },
   { id: 'crafting_table', name: 'Mesa de crafteo', out: { item: 'crafting_table', count: 1 }, ingredients: { wood: 4 }, cat: 'Estaciones' },

@@ -2,8 +2,7 @@
 // / barca. Teclas 1-9, rueda o clic. Una ranura vacía = manos.
 
 import { ITEMS } from '../shared/items';
-import { toolIconCanvas } from './avatar';
-import { itemIconCanvas, hasItemIcon } from './itemicons';
+import { itemSpriteURL } from './itemsprites';
 import type { InvEntry } from '../shared/protocol';
 
 export interface HotbarSel {
@@ -16,11 +15,6 @@ let slots: (string | null)[] = new Array(SLOT_COUNT).fill(null);
 let idx = 0;
 let counts: Record<string, number> = {};
 let onSel: (s: HotbarSel) => void = () => {};
-const iconCache: Record<string, string> = {};
-
-function css(n: number): string {
-  return '#' + ('000000' + n.toString(16)).slice(-6);
-}
 
 function selOf(item: string | null): HotbarSel {
   if (!item) return { kind: 'hand', item: null };
@@ -76,16 +70,8 @@ export function updateHotbar(inv: InvEntry[]): void {
   emit();
 }
 
-function iconUrl(key: string, make: () => HTMLCanvasElement): string {
-  if (!iconCache[key]) iconCache[key] = make().toDataURL();
-  return iconCache[key];
-}
-
 function iconHtml(it: string): string {
-  const d = ITEMS[it];
-  if (d?.tool) return `<span class="hicon himg" style="background-image:url(${iconUrl(it, () => toolIconCanvas(d.tool!.kind, d.tool!.tier))})"></span>`;
-  if (hasItemIcon(it)) return `<span class="hicon himg" style="background-image:url(${iconUrl(it, () => itemIconCanvas(it))})"></span>`;
-  return `<span class="hicon" style="background:${d ? css(d.color) : '#888888'}"></span>`;
+  return `<span class="hicon himg" style="background-image:url(${itemSpriteURL(it)})"></span>`;
 }
 
 function render(): void {
