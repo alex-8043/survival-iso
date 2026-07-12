@@ -2,7 +2,7 @@
 // En multiplayer, este archivo se reemplaza por un servidor Node que reutiliza
 // createSim/stepSim tal cual (mismo contrato de mensajes).
 
-import { createSim, stepSim, Position } from './world';
+import { createSim, stepSim, Position, nodeSnap, invEntries } from './world';
 import { TICK_MS } from '../shared/constants';
 import type { ClientMsg, SimMsg, Snapshot } from '../shared/protocol';
 
@@ -16,7 +16,13 @@ function post(msg: SimMsg): void {
 }
 
 // Estado inicial del mundo (una sola vez).
-post({ t: 'ready', chunk: sim.chunk, playerId: sim.playerId });
+post({
+  t: 'ready',
+  chunk: sim.chunk,
+  nodes: sim.nodes.map(nodeSnap),
+  playerId: sim.playerId,
+  inventory: invEntries(sim.inventory),
+});
 
 ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
   const msg = e.data;
@@ -27,7 +33,8 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
 
 const dt = TICK_MS / 1000;
 setInterval(() => {
-  stepSim(sim, dt);
+  const r = stepSim(sim, dt);
+
   const snap: Snapshot = {
     tick: sim.tick,
     entities: [
@@ -38,6 +45,11 @@ setInterval(() => {
         kind: 'player',
       },
     ],
+    targetNodeId: r.targetNodeId,
   };
   post({ t: 'snapshot', snap });
+
+  if (r.changedNodes.length) post({ t: 'nodes', nodes: r.changedNodes.map(nodeSnap) });
+  if (r.inventoryChanged) post({ t: 'inventory', inventory: invEntries(sim.inventory) });
+  if (r.harvested) post({ t: 'harvested', item: r.harvested.item, x: r.harvested.x, y: r.harvested.y });
 }, TICK_MS);

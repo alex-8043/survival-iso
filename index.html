@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Survival Iso — Fase 1</title>
+    <title>Survival Iso</title>
     <style>
       html, body { margin: 0; height: 100%; background: #1e2030; overflow: hidden;
         font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
@@ -12,11 +12,23 @@
         background: rgba(0,0,0,.38); padding: 8px 11px; border-radius: 8px;
         pointer-events: none; line-height: 1.5; }
       #hud b { color: #f5c96b; }
+      #inventory { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+        display: flex; gap: 8px; align-items: center; background: rgba(0,0,0,.42);
+        padding: 8px 10px; border-radius: 10px; color: #cdd6f4; font-size: 13px;
+        pointer-events: none; max-width: 92vw; flex-wrap: wrap; justify-content: center; }
+      #inventory .inv-empty { opacity: .8; }
+      #inventory .inv-empty b { color: #f5c96b; }
+      .inv-slot { display: flex; align-items: center; gap: 6px;
+        background: rgba(255,255,255,.06); padding: 5px 9px; border-radius: 8px; }
+      .inv-swatch { width: 14px; height: 14px; border-radius: 3px;
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,.35); }
+      .inv-name { opacity: .9; }
+      .inv-count { font-weight: 700; color: #f5c96b; }
     </style>
   </head>
   <body>
     <div id="app"></div>
-    <div id="hud"><b>WASD</b> / <b>Flechas</b> para moverte · Fase 1 — núcleo isométrico</div>
+    <div id="hud"><b>WASD</b> / <b>Flechas</b> moverte · <b>E</b> recolectar (mantener)</div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

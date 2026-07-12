@@ -3,6 +3,8 @@
 
 import { GameRenderer } from './client/renderer';
 import { setupInput } from './client/input';
+import { renderInventory } from './client/hud';
+import { ITEMS } from './shared/items';
 import type { SimMsg } from './shared/protocol';
 
 // Muestra un error visible en pantalla (nunca más una pantalla en blanco muda).
@@ -37,20 +39,33 @@ async function main(): Promise<void> {
   worker.onerror = (e) =>
     showError('Fallo en la simulación (worker): ' + (e.message || e.filename || 'desconocido'));
 
-  let firstSnapshot = true;
   worker.onmessage = (e: MessageEvent<SimMsg>) => {
     const msg = e.data;
-    if (msg.t === 'ready') {
-      // eslint-disable-next-line no-console
-      console.log('[client] sim ready');
-      renderer.setChunk(msg.chunk, msg.playerId);
-    } else if (msg.t === 'snapshot') {
-      if (firstSnapshot) {
-        firstSnapshot = false;
+    switch (msg.t) {
+      case 'ready':
         // eslint-disable-next-line no-console
-        console.log('[client] first snapshot, tick', msg.snap.tick);
+        console.log('[client] ready, nodes', msg.nodes.length);
+        renderer.playerId = msg.playerId;
+        renderer.setChunk(msg.chunk);
+        renderer.setNodes(msg.nodes);
+        renderInventory(msg.inventory);
+        break;
+      case 'snapshot':
+        renderer.applySnapshot(msg.snap);
+        break;
+      case 'nodes':
+        renderer.updateNodes(msg.nodes);
+        break;
+      case 'inventory':
+        // eslint-disable-next-line no-console
+        console.log('[client] inventory', msg.inventory.map((x) => x.id + ':' + x.count).join(','));
+        renderInventory(msg.inventory);
+        break;
+      case 'harvested': {
+        const color = ITEMS[msg.item]?.color ?? 0xffffff;
+        renderer.spawnFloat('+1', color, msg.x, msg.y);
+        break;
       }
-      renderer.applySnapshot(msg.snap);
     }
   };
 

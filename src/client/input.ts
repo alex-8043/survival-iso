@@ -1,5 +1,5 @@
-// Entrada de teclado -> estado de input. Emite un evento solo cuando cambia,
-// y envía el estado completo (un "comando" con forma de red).
+// Entrada de teclado -> estado de input. Emite solo cuando cambia y envía el
+// estado completo (un "comando" con forma de red).
 
 import type { InputState } from '../shared/protocol';
 
@@ -12,10 +12,18 @@ const KEY_MAP: Record<string, keyof InputState> = {
   ArrowLeft: 'left',
   KeyD: 'right',
   ArrowRight: 'right',
+  KeyE: 'action',
+  Space: 'action',
 };
 
 export function setupInput(onChange: (state: InputState) => void): void {
-  const state: InputState = { up: false, down: false, left: false, right: false };
+  const state: InputState = {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+    action: false,
+  };
 
   function apply(code: string, down: boolean): boolean {
     const key = KEY_MAP[code];
