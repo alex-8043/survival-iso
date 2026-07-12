@@ -12,7 +12,9 @@ export const CHEST_SIZE = 27;
 
 export function maxStack(id: string): number {
   const d = ITEMS[id];
-  if (d && (d.tool || d.boat || d.place || d.defense)) return 1;
+  // Solo el equipo va de uno en uno; los bloques colocables (tierra, arena,
+  // piedra, madera, estaciones…) se apilan como cualquier recurso.
+  if (d && (d.tool || d.boat || d.defense)) return 1;
   return 99;
 }
 

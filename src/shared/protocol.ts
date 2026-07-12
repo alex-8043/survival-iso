@@ -11,6 +11,7 @@ export interface AnimalSnap {
   x: number;
   y: number;
   alive: boolean;
+  vid?: number; // id de comercio si es aldeano
 }
 
 export interface Structure {
@@ -91,6 +92,7 @@ export interface SaveState {
   acceptedQuests?: number[];
   edits?: [string, { lvl: number; top: string }][]; // ediciones de terreno
   fluids?: [string, number][]; // celdas de fluido dinámico (1=agua)
+  villagesLooted?: string[]; // aldeas cuyo cofre ya se generó
 }
 
 // Cliente -> Simulación
@@ -102,6 +104,7 @@ export type ClientMsg =
   | { t: 'craft'; id: string }
   | { t: 'place'; item: string; x: number; y: number }
   | { t: 'consume'; item?: string }
+  | { t: 'jump' }
   | { t: 'drink' }
   | { t: 'toggleCave' }
   | { t: 'sleep' }

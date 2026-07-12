@@ -4,8 +4,7 @@
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
 import { TILE_W, TILE_H, MAX_ELEV_PX, BLOCK_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
-import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, villageCenterAt, villageLayoutAt, VILLAGE_SCAN, BEDROCK_LEVEL, type CaveTile } from '../shared/worldgen';
-import { villagerId } from '../shared/trades';
+import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, villageCenterAt, villageLayoutAt, isHouseWall, isHouseInterior, VILLAGE_SCAN, BEDROCK_LEVEL, type CaveTile, type VillageHouse } from '../shared/worldgen';
 import { avatarCanvas, type AvatarAction, type Customization, type HeldTool } from './avatar';
 import { ITEMS } from '../shared/items';
 import type { InteractTarget, Snapshot, Structure, Location, TerrainEdit, FluidEdit } from '../shared/protocol';
@@ -34,8 +33,10 @@ const CAVE_FLOOR = 0x3a3a47;
 const CAVE_WALL = 0x2a2a35;
 
 interface RenderNode { sprite: Container; pulse: number; }
-interface RenderAnimal { sprite: Container; rx: number; ry: number; tx: number; ty: number; }
+interface RenderAnimal { sprite: Container; rx: number; ry: number; tx: number; ty: number; type: AnimalType; vid?: number; }
 interface FloatText { text: Text; life: number; }
+interface RenderHouse { walls: Container; roof: Container; x0: number; y0: number; w: number; h: number; }
+interface RenderVillage { deco: Container[]; houses: RenderHouse[]; }
 
 export class GameRenderer {
   app!: Application;
@@ -58,9 +59,8 @@ export class GameRenderer {
   zoom = 1; camLift = 0; panX = 0; panY = 0;
   panning = false; panCX = 0; panCY = 0;
 
-  // Aldeas (render + clic sobre aldeanos/camas).
-  readonly villages = new Map<string, Container[]>();
-  readonly villagerTiles = new Map<string, { id: number; x: number; y: number }>();
+  // Aldeas (render + clic sobre camas; los aldeanos son animales).
+  readonly villages = new Map<string, RenderVillage>();
   readonly villageBeds = new Set<string>();
   talkTarget: { id: number; x: number; y: number } | null = null;
   sleepTarget: { x: number; y: number } | null = null;
@@ -246,21 +246,21 @@ export class GameRenderer {
     if (!first) this.showTransition();
   }
 
-  // Fundido a negro tipo "cargando" al entrar/salir de la cueva.
+  // Parpadeo breve al bajar/subir de la cueva (no una pantalla de carga).
   private showTransition(): void {
     let el = document.getElementById('cave-fade');
     if (!el) { el = document.createElement('div'); el.id = 'cave-fade'; document.body.appendChild(el); }
     const e = el;
     e.style.transition = 'none';
-    e.style.opacity = '1';
+    e.style.opacity = '0.72';
     e.style.display = 'block';
     void e.offsetWidth; // fuerza reflow
-    requestAnimationFrame(() => { e.style.transition = 'opacity .55s ease'; e.style.opacity = '0'; });
-    window.setTimeout(() => { e.style.display = 'none'; }, 750);
+    requestAnimationFrame(() => { e.style.transition = 'opacity .28s ease'; e.style.opacity = '0'; });
+    window.setTimeout(() => { e.style.display = 'none'; }, 320);
   }
 
   jump(): void {
-    if (this.jumpOff <= 0.01 && this.jumpVel === 0) this.jumpVel = 235;
+    if (this.jumpOff <= 0.01 && this.jumpVel === 0) this.jumpVel = 262; // ~2.5 bloques de altura visual
   }
 
   // --- Consultas de mundo según la capa activa (superficie o cueva) ---
@@ -304,8 +304,8 @@ export class GameRenderer {
       if (!a.alive) continue;
       seen.add(a.id);
       let ra = this.animals.get(a.id);
-      if (!ra) { const sprite = this.makeAnimal(a.type); this.entities.addChild(sprite); ra = { sprite, rx: a.x, ry: a.y, tx: a.x, ty: a.y }; this.animals.set(a.id, ra); }
-      ra.tx = a.x; ra.ty = a.y;
+      if (!ra) { const sprite = this.makeAnimal(a.type, a.vid ?? a.id); this.entities.addChild(sprite); ra = { sprite, rx: a.x, ry: a.y, tx: a.x, ty: a.y, type: a.type, vid: a.vid }; this.animals.set(a.id, ra); }
+      ra.tx = a.x; ra.ty = a.y; ra.type = a.type; ra.vid = a.vid;
     }
     for (const [id, ra] of this.animals) if (!seen.has(id)) { this.entities.removeChild(ra.sprite); ra.sprite.destroy(); this.animals.delete(id); }
   }
@@ -386,7 +386,6 @@ export class GameRenderer {
     for (const [key, sp] of this.decor) if (!wantD.has(key)) { this.entities.removeChild(sp); sp.destroy(); this.decor.delete(key); }
 
     // Aldeas (sólo superficie): casas + camas + pozo + aldeanos.
-    this.villagerTiles.clear();
     this.villageBeds.clear();
     if (this.loc === 'surface') {
       const wantV = new Set<string>();
@@ -398,23 +397,49 @@ export class GameRenderer {
         wantV.add(vkey);
         const layout = villageLayoutAt(cx, cy, this.seed);
         for (const h of layout.houses) this.villageBeds.add(h.bed.x + ',' + h.bed.y);
-        for (const v of layout.villagers) this.villagerTiles.set(v.x + ',' + v.y, { id: villagerId(v.x, v.y, this.seed), x: v.x, y: v.y });
         if (!this.villages.has(vkey)) {
-          const parts: Container[] = [];
-          const well = this.makeWell(); this.placeAt(well, cx, cy, 0.05); parts.push(well);
+          const deco: Container[] = [];
+          const well = this.makeWell(); this.placeAt(well, cx, cy, 0.05); deco.push(well);
+          const farm = this.makeFarm(layout.farm.w, layout.farm.h); this.placeAt(farm, layout.farm.x0, layout.farm.y0, -0.2); deco.push(farm);
+          const houses: RenderHouse[] = [];
           for (const h of layout.houses) {
-            const house = this.makeVillageHouse((this.seed ^ (h.x * 31 + h.y)) | 0); this.placeAt(house, h.x, h.y, 0.12); parts.push(house);
-            const bed = this.makeStructure('bed'); this.placeAt(bed, h.bed.x, h.bed.y, 0.04); parts.push(bed);
+            const built = this.makeHouse(h);
+            this.placeAt(built.floor, h.x0, h.y0, -0.1);
+            const front = depthOf(h.x0 + h.w - 1, h.y0 + h.h - 1);
+            const fs = gridToScreen(h.x0, h.y0);
+            built.walls.x = fs.x; built.walls.y = fs.y - this.elevAtL(cx, cy) * MAX_ELEV_PX; built.walls.zIndex = front + 0.2;
+            built.roof.x = fs.x; built.roof.y = fs.y - this.elevAtL(cx, cy) * MAX_ELEV_PX; built.roof.zIndex = front + 0.5;
+            deco.push(built.floor);
+            this.entities.addChild(built.walls); this.entities.addChild(built.roof);
+            houses.push({ walls: built.walls, roof: built.roof, x0: h.x0, y0: h.y0, w: h.w, h: h.h });
+            if (h.bed) { const bed = this.makeStructure('bed'); this.placeAt(bed, h.bed.x, h.bed.y, 0.04); deco.push(bed); }
           }
-          for (const v of layout.villagers) { const vs = this.makeVillager(villagerId(v.x, v.y, this.seed)); this.placeAt(vs, v.x, v.y, 0.1); parts.push(vs); }
-          for (const p of parts) this.entities.addChild(p);
-          this.villages.set(vkey, parts);
+          for (const p of deco) this.entities.addChild(p);
+          this.villages.set(vkey, { deco, houses });
         }
       }
-      for (const [vkey, parts] of this.villages) if (!wantV.has(vkey)) { for (const p of parts) { this.entities.removeChild(p); p.destroy(); } this.villages.delete(vkey); }
+      for (const [vkey, v] of this.villages) if (!wantV.has(vkey)) { this.destroyVillage(v); this.villages.delete(vkey); }
+      this.updateHouseTransparency();
     } else if (this.villages.size) {
-      for (const [, parts] of this.villages) for (const p of parts) { this.entities.removeChild(p); p.destroy(); }
+      for (const [, v] of this.villages) this.destroyVillage(v);
       this.villages.clear();
+    }
+  }
+
+  private destroyVillage(v: RenderVillage): void {
+    for (const p of v.deco) { this.entities.removeChild(p); p.destroy(); }
+    for (const h of v.houses) { this.entities.removeChild(h.walls); h.walls.destroy(); this.entities.removeChild(h.roof); h.roof.destroy(); }
+  }
+
+  // Baja la opacidad de los muros/techo de la casa donde está el jugador (profundidad).
+  private updateHouseTransparency(): void {
+    const px = Math.round(this.prx), py = Math.round(this.pry);
+    for (const v of this.villages.values()) {
+      for (const h of v.houses) {
+        const inside = px > h.x0 && px < h.x0 + h.w - 1 && py > h.y0 && py < h.y0 + h.h - 1;
+        const a = inside ? 0.22 : 1;
+        h.walls.alpha = a; h.roof.alpha = a;
+      }
     }
   }
 
@@ -778,29 +803,60 @@ export class GameRenderer {
     return g;
   }
 
-  private makeVillageHouse(variant: number): Container {
+  // Casa GRANDE: muros (bloques por tile de perímetro), techo piramidal y suelo.
+  // Todo relativo a la tile origen (x0,y0); el llamador la posiciona.
+  private makeHouse(h: VillageHouse): { walls: Container; roof: Container; floor: Container } {
+    const hw = TILE_W / 2, hh = TILE_H / 2;
+    const o = gridToScreen(h.x0, h.y0);
+    const rel = (x: number, y: number) => { const s = gridToScreen(x, y); return { x: s.x - o.x, y: s.y - o.y }; };
+    const variant = (Math.imul(h.x0, 31) ^ h.y0) & 1;
+    const wallCol = variant ? 0xcbb488 : 0xbfa878;
+    const roofF = variant ? 0x9a4f32 : 0x5f7a44;
+
+    const floor = new Graphics();
+    for (let yy = h.y0 + 1; yy < h.y0 + h.h - 1; yy++) for (let xx = h.x0 + 1; xx < h.x0 + h.w - 1; xx++) {
+      const p = rel(xx, yy);
+      floor.poly([p.x, p.y - hh, p.x + hw, p.y, p.x, p.y + hh, p.x - hw, p.y]).fill({ color: (xx + yy) % 2 ? 0x8a5a34 : 0x7d5030 });
+    }
+
+    const walls = new Graphics();
+    const WH = 2.6 * BLOCK_PX;
+    for (let yy = h.y0; yy < h.y0 + h.h; yy++) for (let xx = h.x0; xx < h.x0 + h.w; xx++) {
+      if (!isHouseWall(h, xx, yy)) continue;
+      const p = rel(xx, yy), topY = p.y - WH;
+      walls.poly([p.x + hw, topY, p.x, topY + hh, p.x, p.y + hh, p.x + hw, p.y]).fill({ color: darker(wallCol, 0.72) });
+      walls.poly([p.x - hw, topY, p.x, topY + hh, p.x, p.y + hh, p.x - hw, p.y]).fill({ color: darker(wallCol, 0.56) });
+      walls.poly([p.x, topY - hh, p.x + hw, topY, p.x, topY + hh, p.x - hw, topY]).fill({ color: wallCol });
+      walls.rect(p.x - 1, topY, 2, WH).fill({ color: 0x6b4a2b, alpha: 0.22 });
+    }
+    const dp = rel(h.door.x, h.door.y);
+    walls.rect(dp.x - 6, dp.y - WH * 0.72, 12, WH * 0.72).fill({ color: 0x3a2416, alpha: 0.55 });
+
+    const roof = new Graphics();
+    const lift = WH + 4;
+    const c00 = rel(h.x0, h.y0), c10 = rel(h.x0 + h.w - 1, h.y0), c11 = rel(h.x0 + h.w - 1, h.y0 + h.h - 1), c01 = rel(h.x0, h.y0 + h.h - 1);
+    const p00 = { x: c00.x, y: c00.y - lift }, p10 = { x: c10.x, y: c10.y - lift }, p11 = { x: c11.x, y: c11.y - lift }, p01 = { x: c01.x, y: c01.y - lift };
+    const A = { x: (c00.x + c11.x) / 2, y: (c00.y + c11.y) / 2 - lift - Math.max(h.w, h.h) * 4.5 };
+    roof.poly([A.x, A.y, p00.x, p00.y, p10.x, p10.y]).fill({ color: darker(roofF, 0.9) });
+    roof.poly([A.x, A.y, p00.x, p00.y, p01.x, p01.y]).fill({ color: darker(roofF, 0.78) });
+    roof.poly([A.x, A.y, p10.x, p10.y, p11.x, p11.y]).fill({ color: darker(roofF, 0.68) });
+    roof.poly([A.x, A.y, p01.x, p01.y, p11.x, p11.y]).fill({ color: roofF });
+    roof.poly([p00.x, p00.y, p10.x, p10.y, p11.x, p11.y, p01.x, p01.y]).stroke({ width: 2, color: darker(roofF, 0.6), alpha: 0.5 });
+    return { walls, roof, floor };
+  }
+
+  // Parcela de cultivo (decorativa): tierra arada con brotes en filas.
+  private makeFarm(w: number, h: number): Container {
     const g = new Graphics();
-    const hw = (TILE_W / 2) * 0.94, hh = (TILE_H / 2) * 0.94, H = 24, RH = 16;
-    const wallR = 0xbfa878, wallL = 0xa1875f;
-    const red = (variant & 1) === 0;
-    const rF = red ? 0x9a4f32 : 0x5f7a44, rR = red ? 0x843f27 : 0x516a39;
-    const rBL = red ? 0xb0623c : 0x6f8a4e, rBR = red ? 0xa5583a : 0x647f47;
-    g.ellipse(0, 5, hw, 7).fill({ color: 0x000000, alpha: 0.2 });
-    // muros (cara izquierda y derecha)
-    g.poly([-hw, -H, 0, -H + hh, 0, hh, -hw, 0]).fill({ color: wallL });
-    g.poly([hw, -H, 0, -H + hh, 0, hh, hw, 0]).fill({ color: wallR });
-    // puerta y ventana en la cara derecha
-    g.poly([5, -12, 11, -9, 11, 0, 5, -3]).fill({ color: 0x4a2f1c });
-    g.poly([2, -18, 5, -16.5, 5, -12.5, 2, -14]).fill({ color: 0x6a4a2b });
-    // vigas de madera (esquinas)
-    g.rect(-1, -H + hh - 1, 2, hh).fill({ color: 0x6b4a2b });
-    // techo a cuatro aguas
-    const ax = 0, ay = -H - RH;
-    const N = [0, -H - hh], E = [hw, -H], S = [0, -H + hh], W = [-hw, -H];
-    g.poly([ax, ay, N[0], N[1], E[0], E[1]]).fill({ color: rBR });
-    g.poly([ax, ay, N[0], N[1], W[0], W[1]]).fill({ color: rBL });
-    g.poly([ax, ay, E[0], E[1], S[0], S[1]]).fill({ color: rR });
-    g.poly([ax, ay, W[0], W[1], S[0], S[1]]).fill({ color: rF });
+    const hw = TILE_W / 2, hh = TILE_H / 2;
+    for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) {
+      const s = gridToScreen(xx, yy);
+      g.poly([s.x, s.y - hh, s.x + hw, s.y, s.x, s.y + hh, s.x - hw, s.y]).fill({ color: 0x6b4a2b });
+      g.poly([s.x, s.y - hh, s.x + hw, s.y, s.x, s.y + hh, s.x - hw, s.y]).stroke({ width: 1, color: 0x543a22, alpha: 0.5 });
+      const crop = (xx * 2 + yy) % 3;
+      const col = crop === 0 ? 0x8ec04a : crop === 1 ? 0xd8c24a : 0x5fa03a;
+      for (const ox of [-hw * 0.4, 0, hw * 0.4]) g.rect(s.x + ox - 0.8, s.y - 5, 1.6, 6).fill({ color: col });
+    }
     return g;
   }
 
@@ -820,7 +876,8 @@ export class GameRenderer {
     return g;
   }
 
-  private makeAnimal(type: AnimalType): Container {
+  private makeAnimal(type: AnimalType, variant = 0): Container {
+    if (type === 'villager') return this.makeVillager(variant);
     const g = new Graphics();
     if (type === 'bat') {
       g.ellipse(0, -1, 5, 2).fill({ color: 0x000000, alpha: 0.18 });
@@ -986,6 +1043,7 @@ export class GameRenderer {
       if (f.life >= 1) { this.entities.removeChild(f.text); f.text.destroy(); this.floats.splice(i, 1); }
     }
 
+    if (this.villages.size) this.updateHouseTransparency();
     this.computeTarget();
     this.drawDarkness();
   }
@@ -1032,30 +1090,30 @@ export class GameRenderer {
       } else {
         const pick = this.pickTile(wx, wy);
         const st = this.structTiles.get(pick.x + ',' + pick.y);
-        // aldeano bajo el cursor (por cercanía en pantalla, más tolerante)
-        let vbest = 26; let vhit: { id: number; x: number; y: number } | null = null;
-        for (const v of this.villagerTiles.values()) {
-          const vs = gridToScreen(v.x, v.y);
-          const vsy = vs.y - this.elevAtL(v.x, v.y) * MAX_ELEV_PX - 16;
-          const d = Math.hypot(vs.x - wx, vsy - wy);
-          if (d < vbest && Math.hypot(v.x - this.prx, v.y - this.pry) <= INTERACT_RANGE + 0.8) { vbest = d; vhit = v; }
+        // animal/aldeano más cercano al cursor
+        let bestD = 26; let hitVillager: RenderAnimal | null = null; let hitAnimal = -1;
+        for (const [id, ra] of this.animals) {
+          const range = INTERACT_RANGE + (ra.type === 'villager' ? 0.9 : 0);
+          const d = Math.hypot(ra.sprite.x - wx, ra.sprite.y - 8 - wy);
+          if (d < bestD && Math.hypot(ra.rx - this.prx, ra.ry - this.pry) <= range) {
+            bestD = d;
+            if (ra.type === 'villager' && ra.vid !== undefined) { hitVillager = ra; hitAnimal = -1; } else { hitAnimal = id; hitVillager = null; }
+          }
         }
         if (st && (st.type === 'crafting_table' || st.type === 'furnace' || st.type === 'forge' || st.type === 'chest' || st.type === 'boat' || st.type === 'bed') && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) {
           this.structTarget = { id: st.id, type: st.type, x: pick.x, y: pick.y };
           this.app.canvas.style.cursor = 'pointer';
-        } else if (vhit) {
-          this.talkTarget = vhit;
+        } else if (hitVillager) {
+          this.talkTarget = { id: hitVillager.vid!, x: hitVillager.rx, y: hitVillager.ry };
+          this.app.canvas.style.cursor = 'pointer';
+        } else if (hitAnimal >= 0) {
+          next = { kind: 'animal', id: hitAnimal };
           this.app.canvas.style.cursor = 'pointer';
         } else if (this.villageBeds.has(pick.x + ',' + pick.y) && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE + 0.6) {
           this.sleepTarget = { x: pick.x, y: pick.y };
           this.app.canvas.style.cursor = 'pointer';
         } else {
-          let bestD = 24;
-          for (const [id, ra] of this.animals) {
-            const d = Math.hypot(ra.sprite.x - wx, ra.sprite.y - 8 - wy);
-            if (d < bestD && Math.hypot(ra.rx - this.prx, ra.ry - this.pry) <= INTERACT_RANGE) { bestD = d; next = { kind: 'animal', id }; }
-          }
-          if (!next) {
+          {
             const key = this.nodeKey(pick.x, pick.y);
             if (!this.depleted.has(key) && this.nodeKindAtL(pick.x, pick.y) && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) next = { kind: 'node', x: pick.x, y: pick.y };
             else if (this.canDig(pick.x, pick.y) && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) next = { kind: 'block', x: pick.x, y: pick.y };

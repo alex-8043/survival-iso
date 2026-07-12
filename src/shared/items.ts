@@ -18,7 +18,7 @@ export const ANIMAL_INFO: Record<AnimalType, AnimalInfo> = {
   bat: { health: 2, speed: 2.6 },
   frog: { health: 1, speed: 1.6 },
   monkey: { health: 2, speed: 2.2 },
-  villager: { health: 9999, speed: 0 }, // no se ataca ni se mueve
+  villager: { health: 9999, speed: 0.7 }, // no se ataca; deambula por la aldea
 };
 
 export type ToolKind = 'axe' | 'pickaxe' | 'sword';

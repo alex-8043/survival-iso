@@ -4,7 +4,7 @@ import {
   createSim, createSimFromSave, serializeSim, stepSim, consume, drink, craft, place, board,
   timeInfo, animalSnaps, invSlots, playerPos, onWaterOf, toggleCave, onEntranceOf, bestFood,
   moveItem, quickMove, moveAmount, sortInv, sortChest, chestItems,
-  sleep, trade, acceptQuest, completeQuest,
+  sleep, trade, acceptQuest, completeQuest, jump,
 } from './world';
 import type { Sim, StepResult } from './world';
 import { WORLD_SEED, TICK_MS } from '../shared/constants';
@@ -53,6 +53,7 @@ function startLoop(): void {
     for (const f of r.floaters) post({ t: 'floater', text: f.text, color: f.color, x: f.x, y: f.y });
     for (const s of r.sfx) post({ t: 'sfx', sound: s.sound, x: s.x, y: s.y });
     if (r.edits.length || r.fluids.length) post({ t: 'terrain', edits: r.edits, fluids: r.fluids });
+    if (r.structuresChanged) post({ t: 'structures', structures: sim.structures });
   }, TICK_MS);
 }
 
@@ -93,6 +94,8 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
       if (r.ok) postInv();
       if (r.floater) post({ t: 'floater', ...r.floater });
     }
+  } else if (m.t === 'jump') {
+    jump(sim);
   } else if (m.t === 'drink') {
     const r = drink(sim);
     if (r.floater) post({ t: 'floater', ...r.floater });
@@ -113,7 +116,7 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
   } else if (m.t === 'openChest') {
     postChest(m.id);
   } else if (m.t === 'toggleCave') {
-    const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [] };
+    const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [], structuresChanged: false };
     toggleCave(sim, res);
     for (const f of res.floaters) post({ t: 'floater', ...f });
     for (const s of res.sfx) post({ t: 'sfx', sound: s.sound, x: s.x, y: s.y });

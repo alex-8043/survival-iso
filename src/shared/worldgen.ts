@@ -162,42 +162,86 @@ export function caveEntranceAt(x: number, y: number, seed: number): boolean {
   return hash2(x, y, (seed ^ 0x5eed) | 0) < 0.0016;
 }
 
-// Aldeas: muy raras, en llano de hierba/bosque.
+// Aldeas: raras (más que antes), en llano de hierba/bosque.
 export function villageCenterAt(x: number, y: number, seed: number): boolean {
   const t = tileAt(x, y, seed);
   if (t.water || t.level > 2) return false;
   if (t.terrain !== TERRAIN.GRASS && t.terrain !== TERRAIN.FOREST) return false;
-  return hash2(x, y, (seed ^ 0x1a1d) | 0) < 0.0006;
+  return hash2(x, y, (seed ^ 0x1a1d) | 0) < 0.0002;
 }
 export function villageSeed(cx: number, cy: number, seed: number): number {
   return (Math.imul(cx | 0, 668265263) ^ Math.imul(cy | 0, 374761393) ^ (seed | 0)) | 0;
 }
 
-// Distribución determinista de una aldea: casas en anillo, cada una con su cama
-// y un aldeano cerca de la puerta. La usa el cliente para render y clic.
-export interface VillageHouse { x: number; y: number; bed: { x: number; y: number }; }
+// Casas GRANDES y habitables: rectángulo con muros de perímetro, una puerta,
+// interior con cama; una casa por aldea lleva cofre (loot).
+export interface VillageHouse {
+  x0: number; y0: number; w: number; h: number;
+  door: { x: number; y: number };
+  bed: { x: number; y: number };
+  chest: { x: number; y: number } | null; // sólo la casa de loot
+}
 export interface VillageLayout {
   cx: number; cy: number;
   houses: VillageHouse[];
-  villagers: { x: number; y: number }[];
+  spawns: { x: number; y: number; home: number }[];
+  farm: { x0: number; y0: number; w: number; h: number };
 }
-export const VILLAGE_SCAN = 10; // radio máximo de una aldea respecto a su centro
+export const VILLAGE_SCAN = 22; // radio máximo de una aldea respecto a su centro
+
+function houseDoor(x0: number, y0: number, w: number, h: number, cx: number, cy: number): { x: number; y: number } {
+  const hcx = x0 + (w - 1) / 2, hcy = y0 + (h - 1) / 2;
+  const dx = cx - hcx, dy = cy - hcy;
+  if (Math.abs(dx) >= Math.abs(dy)) return { x: dx >= 0 ? x0 + w - 1 : x0, y: y0 + Math.floor(h / 2) };
+  return { x: x0 + Math.floor(w / 2), y: dy >= 0 ? y0 + h - 1 : y0 };
+}
+
 export function villageLayoutAt(cx: number, cy: number, seed: number): VillageLayout {
   const vs = villageSeed(cx, cy, seed);
-  const count = 3 + Math.floor(hash2(0, 0, vs) * 3); // 3..5 casas
+  const count = 4 + Math.floor(hash2(0, 0, vs) * 3); // 4..6 casas
+  const lootIdx = Math.floor(hash2(9, 9, vs) * count) % count;
   const houses: VillageHouse[] = [];
-  const villagers: { x: number; y: number }[] = [];
+  const spawns: { x: number; y: number; home: number }[] = [];
   for (let i = 0; i < count; i++) {
-    const ang = (i / count) * Math.PI * 2 + (hash2(i, 1, vs) - 0.5) * 0.8;
-    const rad = 4 + Math.floor(hash2(i, 2, vs) * 4); // 4..7
-    const hx = cx + Math.round(Math.cos(ang) * rad);
-    const hy = cy + Math.round(Math.sin(ang) * rad);
-    if (hx === cx && hy === cy) continue; // no encima del pozo central
-    houses.push({ x: hx, y: hy, bed: { x: hx, y: hy } });
-    // aldeano junto a la casa (evita solaparse con la cama)
-    villagers.push({ x: hx + 1, y: hy + 1 });
+    const ang = (i / count) * Math.PI * 2 + (hash2(i, 1, vs) - 0.5) * 0.4;
+    const rad = 10 + Math.floor(hash2(i, 2, vs) * 5); // 10..14 (lejos: casas grandes)
+    const w = 6 + Math.floor(hash2(i, 3, vs) * 3); // 6..8
+    const h = 6 + Math.floor(hash2(i, 4, vs) * 3);
+    const x0 = cx + Math.round(Math.cos(ang) * rad) - Math.floor(w / 2);
+    const y0 = cy + Math.round(Math.sin(ang) * rad) - Math.floor(h / 2);
+    const door = houseDoor(x0, y0, w, h, cx, cy);
+    const bed = { x: x0 + 1, y: y0 + 1 };
+    const chest = i === lootIdx ? { x: x0 + w - 2, y: y0 + 1 } : null;
+    houses.push({ x0, y0, w, h, door, bed, chest });
+    // aldeano: aparece junto a la puerta (luego deambula por la aldea)
+    spawns.push({ x: door.x + Math.sign(cx - door.x || 1), y: door.y + Math.sign(cy - door.y || 1), home: i });
   }
-  return { cx, cy, houses, villagers };
+  const farm = { x0: cx + 2, y0: cy - 2, w: 5, h: 4 };
+  return { cx, cy, houses, spawns, farm };
+}
+
+// ¿Es (x,y) un muro macizo de la casa (perímetro salvo la puerta)?
+export function isHouseWall(h: VillageHouse, x: number, y: number): boolean {
+  if (x < h.x0 || x >= h.x0 + h.w || y < h.y0 || y >= h.y0 + h.h) return false;
+  const perimeter = x === h.x0 || x === h.x0 + h.w - 1 || y === h.y0 || y === h.y0 + h.h - 1;
+  if (!perimeter) return false;
+  return !(x === h.door.x && y === h.door.y); // la puerta se cruza
+}
+// ¿Está (x,y) en el interior (dentro de los muros)?
+export function isHouseInterior(h: VillageHouse, x: number, y: number): boolean {
+  return x > h.x0 && x < h.x0 + h.w - 1 && y > h.y0 && y < h.y0 + h.h - 1;
+}
+// Centro de aldea más cercano a (px,py), o null.
+export function nearestVillage(px: number, py: number, seed: number): { cx: number; cy: number } | null {
+  const rx = Math.round(px), ry = Math.round(py);
+  let best: { cx: number; cy: number } | null = null, bestD = Infinity;
+  for (let dy = -VILLAGE_SCAN; dy <= VILLAGE_SCAN; dy++) for (let dx = -VILLAGE_SCAN; dx <= VILLAGE_SCAN; dx++) {
+    const cx = rx + dx, cy = ry + dy;
+    if (!villageCenterAt(cx, cy, seed)) continue;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = { cx, cy }; }
+  }
+  return best;
 }
 
 // Semilla determinista de la cueva a partir de las coordenadas de su entrada.
@@ -244,14 +288,13 @@ export function caveNodeAt(x: number, y: number, cseed: number): NodeKind | null
   if (caveTile(x, y, cseed).kind !== 'floor') return null;
   if (Math.abs(x) <= 2 && Math.abs(y) <= 2) return null;
   const r = hash2(x, y, (cseed ^ 0x1f7) | 0);
-  const d = Math.hypot(x, y);
-  // Bandas de rareza (r uniforme 0..1): diamante << oro < hierro < carbón < roca.
-  // El diamante y el oro sólo afloran en lo profundo; si no, degradan a hierro.
-  if (r < 0.003) return d > 16 ? 'diamond' : 'iron'; // el más raro y preciado
-  if (r < 0.011) return d > 10 ? 'gold' : 'iron';    // raro, algo profundo
-  if (r < 0.03) return 'iron';                        // común
-  if (r < 0.05) return 'coal';
-  if (r < 0.085) return 'rock';
+  const d = Math.hypot(x, y); // profundidad = distancia a la salida (centro)
+  // Cuanto MÁS PROFUNDO, mejores minerales: carbón (cerca) -> hierro -> oro -> diamante (lo más hondo).
+  if (d > 26 && r < 0.01) return 'diamond';  // el más preciado, sólo en lo más profundo
+  if (d > 17 && r < 0.024) return 'gold';
+  if (d > 9 && r < 0.042) return 'iron';
+  if (r < 0.045) return 'coal';               // carbón, sobre todo cerca de la entrada
+  if (r < 0.08) return 'rock';
   return null;
 }
 

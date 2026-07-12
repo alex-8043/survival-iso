@@ -24,13 +24,13 @@ import {
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN, MAX_BLOCK, BEDROCK_LEVEL, WATER_SURFACE, terrainTopMaterial, materialItem, subsurfaceMaterial } from '../shared/worldgen';
+import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN, MAX_BLOCK, BEDROCK_LEVEL, WATER_SURFACE, terrainTopMaterial, materialItem, subsurfaceMaterial, villageLayoutAt, isHouseWall, nearestVillage, VILLAGE_SCAN } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
 import type { TerrainEdit, FluidEdit } from '../shared/protocol';
 import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor } from '../shared/items';
 import type { AnimalType } from '../shared/items';
 import { recipeById } from '../shared/recipes';
-import { SELL, BUY, questFor } from '../shared/trades';
+import { SELL, BUY, questFor, villagerId } from '../shared/trades';
 import { type Slot, INV_SIZE, INV_MAIN, CHEST_SIZE, makeSlots, addTo, takeFrom, countIn, slotCounts, moveSlot, sortRange, cloneSlots } from '../shared/inventory';
 import type { InputState, InteractTarget, Stats, AnimalSnap, TimeInfo, InvAddr, SaveState, Structure, Location } from '../shared/protocol';
 
@@ -38,6 +38,7 @@ export const Position = defineComponent({ x: Types.f32, y: Types.f32 });
 
 export interface Animal {
   id: number; type: AnimalType; x: number; y: number; tx: number; ty: number; wait: number; health: number; alive: boolean; layer: Location;
+  vid?: number; vcx?: number; vcy?: number; // aldeanos: id de comercio + centro de su aldea
 }
 export interface Floater { text: string; color: number; x: number; y: number; }
 
@@ -71,9 +72,13 @@ export interface Sim {
   acceptedQuests: number[];
   caveCooldown: number;
   wasOnEntrance: boolean;
+  jumpTimer: number; // ventana tras saltar en la que se pueden subir 2 bloques
   edits: Map<string, { lvl: number; top: string }>; // ediciones de terreno (superficie)
   fluids: Map<string, number>; // celdas de fluido dinámico (1=agua)
   floodQueue: { x: number; y: number }[]; // frente de expansión de fluido pendiente
+  village: { cx: number; cy: number } | null; // aldea cercana cacheada
+  villageWalls: Set<string>; // muros macizos de la aldea cacheada
+  villagesLooted: Set<string>; // aldeas cuyo cofre ya se generó
 }
 
 export interface StepResult {
@@ -83,6 +88,7 @@ export interface StepResult {
   sfx: { sound: string; x: number; y: number }[];
   edits: TerrainEdit[];
   fluids: FluidEdit[];
+  structuresChanged: boolean;
 }
 
 // Material de sonido para un nodo minado.
@@ -127,8 +133,9 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
     location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null, riding: false,
     acceptedQuests: [],
-    caveCooldown: 0, wasOnEntrance: false,
+    caveCooldown: 0, wasOnEntrance: false, jumpTimer: 0,
     edits: new Map(), fluids: new Map(), floodQueue: [],
+    village: null, villageWalls: new Set(), villagesLooted: new Set(),
   };
 }
 
@@ -161,6 +168,7 @@ export function createSimFromSave(save: SaveState): Sim {
   sim.acceptedQuests = save.acceptedQuests ? [...save.acceptedQuests] : [];
   if (save.edits) for (const [k, v] of save.edits) sim.edits.set(k, { lvl: v.lvl, top: v.top });
   if (save.fluids) for (const [k, v] of save.fluids) sim.fluids.set(k, v);
+  if (save.villagesLooted) for (const k of save.villagesLooted) sim.villagesLooted.add(k);
   if (sim.location === 'surface') for (let i = 0; i < 4; i++) trySpawnAnimal(sim);
   return sim;
 }
@@ -181,6 +189,7 @@ export function serializeSim(sim: Sim): SaveState {
     acceptedQuests: [...sim.acceptedQuests],
     edits: [...sim.edits.entries()].map(([k, v]) => [k, { lvl: v.lvl, top: v.top }] as [string, { lvl: number; top: string }]),
     fluids: [...sim.fluids.entries()],
+    villagesLooted: [...sim.villagesLooted],
   };
 }
 
@@ -231,12 +240,19 @@ function blockedAt(sim: Sim, x: number, y: number): boolean {
   const ty = Math.round(y);
   if (sim.location === 'cave') return !caveTile(tx, ty, sim.caveSeed).passable; // muro/lava/agua
   if (springAt(tx, ty, sim.seed) && !sim.edits.has(keyOf(tx, ty))) return true; // manantial (si no se ha excavado)
+  if (sim.villageWalls.has(keyOf(tx, ty))) return true; // muro de casa de aldea
   const s = structureAt(sim, tx, ty);
   if (s && ITEMS[s.type]?.solid) return true;
   if (effWater(sim, tx, ty)) return false; // se puede nadar
-  // Colisión por altura: sólo se sube 1 bloque (salto de 1 m).
+  // Colisión por altura: se sube 1 bloque andando, 2 saltando.
   const pl = effLevel(sim, Math.round(Position.x[sim.playerId]), Math.round(Position.y[sim.playerId]));
-  return effLevel(sim, tx, ty) - pl >= 2;
+  const climb = sim.jumpTimer > 0 ? 2 : 1;
+  return effLevel(sim, tx, ty) - pl > climb;
+}
+
+// Salto: abre una ventana breve en la que se pueden subir 2 bloques.
+export function jump(sim: Sim): void {
+  sim.jumpTimer = 0.55;
 }
 
 function layerCount(sim: Sim, layer: Location): number {
@@ -246,7 +262,9 @@ function layerCount(sim: Sim, layer: Location): number {
 }
 
 function trySpawnAnimal(sim: Sim): void {
-  if (layerCount(sim, 'surface') >= ANIMAL_CAP) return;
+  let surf = 0;
+  for (const a of sim.animals) if (a.layer === 'surface' && a.type !== 'villager') surf++;
+  if (surf >= ANIMAL_CAP) return;
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
   for (let a = 0; a < 12; a++) {
@@ -293,9 +311,10 @@ export function onWaterOf(sim: Sim): boolean {
 }
 
 export function stepSim(sim: Sim, dt: number): StepResult {
-  const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [] };
+  const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [], structuresChanged: false };
   const eid = sim.playerId;
   sim.timeS += dt;
+  if (sim.jumpTimer > 0) sim.jumpTimer = Math.max(0, sim.jumpTimer - dt);
 
   const inp = sim.input;
   let gx = 0, gy = 0;
@@ -349,6 +368,19 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   if (sim.stats.food <= 0 || sim.stats.thirst <= 0) sim.stats.health = Math.max(0, sim.stats.health - STARVE_DAMAGE * dt);
   else if (sim.stats.health < 100) sim.stats.health = Math.min(100, sim.stats.health + HEALTH_REGEN * dt);
 
+  // Lava en cueva: tocarla (estar justo al lado) hace MUCHO daño.
+  if (sim.location === 'cave') {
+    const lx = Math.round(px), ly = Math.round(py);
+    let nearLava = false;
+    for (const [ox, oy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      if (caveTile(lx + ox, ly + oy, sim.caveSeed).kind === 'lava') { nearLava = true; break; }
+    }
+    if (nearLava) {
+      sim.stats.health = Math.max(0, sim.stats.health - 22 * dt); // ~22/s
+      if (sim.tick % 18 === 0) res.floaters.push({ text: '¡Lava! -vida', color: 0xff5522, x: px, y: py });
+    }
+  }
+
   if (sim.interactActive && sim.interactTarget) {
     if (sim.harvestTimer <= 0) {
       const cd = doInteract(sim, res, px, py);
@@ -357,6 +389,7 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   } else sim.harvestTimer = 0;
 
   updateAnimals(sim, dt);
+  if (sim.village || sim.tick % 20 === 0) ensureVillage(sim, res); // aldea cercana (throttle si no hay)
   if (sim.location === 'cave') {
     sim.caveMobTimer -= dt;
     if (sim.caveMobTimer <= 0) { sim.caveMobTimer = CAVE_MOB_SPAWN_S; despawnFar(sim); trySpawnCaveMob(sim); }
@@ -471,6 +504,7 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
 
   const an = sim.animals.find((a) => a.id === tgt.id && a.alive);
   if (!an) return 0;
+  if (an.type === 'villager') return 0; // a los aldeanos no se les ataca (se comercia)
   if (Math.hypot(an.x - px, an.y - py) > INTERACT_RANGE) return 0;
   const tool = toolFor(sim.activeTool);
   const dmg = tool && tool.kind === 'sword' ? tool.tier : 1;
@@ -494,15 +528,23 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
   return HARVEST_COOLDOWN;
 }
 
+const VILLAGE_ROAM = 13; // radio en el que deambulan los aldeanos
+
 function updateAnimals(sim: Sim, dt: number): void {
   for (const a of sim.animals) {
     if (!a.alive || a.layer !== sim.location) continue; // sólo la capa activa se mueve
     const rng = a.type === 'bat' ? 9 : 6;
     a.wait -= dt;
     if (a.wait <= 0 && Math.abs(a.x - a.tx) < 0.2 && Math.abs(a.y - a.ty) < 0.2) {
-      a.wait = (a.type === 'bat' ? 0.4 : 1) + hash2(a.id, sim.tick, sim.seed) * 3;
-      a.tx = a.x + (hash2(a.id, sim.tick + 1, sim.seed) - 0.5) * rng;
-      a.ty = a.y + (hash2(a.id, sim.tick + 2, sim.seed) - 0.5) * rng;
+      if (a.type === 'villager' && a.vcx !== undefined) {
+        a.wait = 1.4 + hash2(a.id, sim.tick, sim.seed) * 3.5;
+        a.tx = a.vcx + (hash2(a.id, sim.tick + 1, sim.seed) - 0.5) * 2 * VILLAGE_ROAM;
+        a.ty = a.vcy! + (hash2(a.id, sim.tick + 2, sim.seed) - 0.5) * 2 * VILLAGE_ROAM;
+      } else {
+        a.wait = (a.type === 'bat' ? 0.4 : 1) + hash2(a.id, sim.tick, sim.seed) * 3;
+        a.tx = a.x + (hash2(a.id, sim.tick + 1, sim.seed) - 0.5) * rng;
+        a.ty = a.y + (hash2(a.id, sim.tick + 2, sim.seed) - 0.5) * rng;
+      }
     }
     const dx = a.tx - a.x, dy = a.ty - a.y;
     const d = Math.hypot(dx, dy);
@@ -512,7 +554,7 @@ function updateAnimals(sim: Sim, dt: number): void {
       const ny = a.y + (dy / d) * step;
       const passable = a.layer === 'cave'
         ? caveTile(Math.round(nx), Math.round(ny), sim.caveSeed).passable
-        : tileAt(Math.round(nx), Math.round(ny), sim.seed).passable;
+        : tileAt(Math.round(nx), Math.round(ny), sim.seed).passable && !(a.type === 'villager' && sim.villageWalls.has(keyOf(Math.round(nx), Math.round(ny))));
       if (passable) { a.x = nx; a.y = ny; }
       else { a.tx = a.x; a.ty = a.y; }
     }
@@ -523,7 +565,62 @@ function updateAnimals(sim: Sim, dt: number): void {
 function despawnFar(sim: Sim): void {
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
-  sim.animals = sim.animals.filter((a) => a.layer !== sim.location || Math.hypot(a.x - px, a.y - py) < SPAWN_RADIUS * 1.7);
+  sim.animals = sim.animals.filter((a) => a.type === 'villager' || a.layer !== sim.location || Math.hypot(a.x - px, a.y - py) < SPAWN_RADIUS * 1.7);
+}
+
+function clearVillage(sim: Sim): void {
+  sim.village = null;
+  sim.villageWalls = new Set();
+  sim.animals = sim.animals.filter((a) => a.type !== 'villager');
+}
+
+function makeVillageLoot(vs: number): Slot[] {
+  const c = makeSlots(CHEST_SIZE);
+  const LOOT = ['wood', 'stone', 'coal', 'leather', 'wool', 'meat', 'coin', 'wood_pickaxe', 'wood_axe'];
+  const n = 3 + Math.floor(hash2(3, 3, vs) * 4); // 3..6 montones
+  for (let i = 0; i < n; i++) {
+    const id = LOOT[Math.floor(hash2(i, 7, vs) * LOOT.length) % LOOT.length];
+    const per = id === 'coin' ? 14 : id.includes('_') ? 1 : 6;
+    const cnt = 1 + Math.floor(hash2(i, 11, vs) * per);
+    addTo(c, id, cnt, 0, CHEST_SIZE);
+  }
+  return c;
+}
+
+// Cachea la aldea cercana: muros (colisión), cofre de loot y aldeanos que roamean.
+function ensureVillage(sim: Sim, res: StepResult): void {
+  if (sim.location !== 'surface') { if (sim.village) clearVillage(sim); return; }
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (sim.village) {
+    if (Math.hypot(sim.village.cx - px, sim.village.cy - py) < VILLAGE_SCAN + 8) return; // vigente
+    clearVillage(sim);
+  }
+  const v = nearestVillage(px, py, sim.seed);
+  if (!v || Math.hypot(v.cx - px, v.cy - py) > VILLAGE_SCAN + 4) return;
+  const vs = (Math.imul(v.cx | 0, 668265263) ^ Math.imul(v.cy | 0, 374761393) ^ (sim.seed | 0)) | 0;
+  const layout = villageLayoutAt(v.cx, v.cy, sim.seed);
+  sim.village = { cx: v.cx, cy: v.cy };
+  sim.villageWalls = new Set();
+  for (const h of layout.houses) {
+    for (let yy = h.y0; yy < h.y0 + h.h; yy++) for (let xx = h.x0; xx < h.x0 + h.w; xx++) {
+      if (isHouseWall(h, xx, yy)) sim.villageWalls.add(keyOf(xx, yy));
+    }
+  }
+  const vkey = v.cx + ',' + v.cy;
+  if (!sim.villagesLooted.has(vkey)) {
+    sim.villagesLooted.add(vkey);
+    const lh = layout.houses.find((h) => h.chest);
+    if (lh && lh.chest && !structureAt(sim, lh.chest.x, lh.chest.y)) {
+      const id = sim.nextStructId++;
+      sim.structures.push({ id, type: 'chest', x: lh.chest.x, y: lh.chest.y });
+      sim.chests[id] = makeVillageLoot(vs);
+      res.structuresChanged = true;
+    }
+  }
+  for (const s of layout.spawns) {
+    const vid = villagerId(v.cx + s.home * 7919, v.cy, sim.seed);
+    sim.animals.push({ id: sim.nextAnimalId++, type: 'villager', x: s.x, y: s.y, tx: s.x, ty: s.y, wait: hash2(s.home, 1, sim.seed) * 3, health: 9999, alive: true, layer: 'surface', vid, vcx: v.cx, vcy: v.cy });
+  }
 }
 
 function hasStationNear(sim: Sim, type: string): boolean {
@@ -774,7 +871,9 @@ export function timeInfo(sim: Sim): TimeInfo {
   return { day: Math.floor(sim.timeS / DAY_LENGTH_S) + 1, tod: (sim.timeS % DAY_LENGTH_S) / DAY_LENGTH_S };
 }
 export function animalSnaps(sim: Sim): AnimalSnap[] {
-  return sim.animals.filter((a) => a.layer === sim.location).map((a) => ({ id: a.id, type: a.type, x: a.x, y: a.y, alive: a.alive }));
+  return sim.animals.filter((a) => a.layer === sim.location).map((a) => (
+    a.vid !== undefined ? { id: a.id, type: a.type, x: a.x, y: a.y, alive: a.alive, vid: a.vid } : { id: a.id, type: a.type, x: a.x, y: a.y, alive: a.alive }
+  ));
 }
 export function invSlots(sim: Sim): Slot[] { return sim.inv; }
 export function playerPos(sim: Sim): { x: number; y: number } {

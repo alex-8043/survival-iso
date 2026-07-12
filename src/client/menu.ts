@@ -41,7 +41,7 @@ export function showMenu(opts: MenuOpts): void {
     card.innerHTML = '<h1>Survival <span>Iso</span></h1><p class="menu-sub">Aventura de supervivencia isométrica</p>';
     const btns = el('div', 'menu-btns col');
     btns.appendChild(button('Nueva partida', customize, 'primary'));
-    const cont = button('Continuar partida', opts.onContinue);
+    const cont = button('Continuar partida', () => { overlay.remove(); opts.onContinue(); });
     if (!opts.hasSave) {
       cont.disabled = true;
       cont.title = 'No hay partida guardada';

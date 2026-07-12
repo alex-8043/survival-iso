@@ -17,11 +17,15 @@ const BIG_R = 92, BIG_TP = 3;
 let seed = 0;
 let lastKey = '';
 let bigOpen = false;
+// Niebla de guerra en cueva: sólo se muestran las galerías ya exploradas.
+let caveVisited = new Set<string>();
+let caveVisitedSeed = 0;
 
 function hexStr(n: number): string { return '#' + ('000000' + n.toString(16)).slice(-6); }
 
 function colorAt(wx: number, wy: number, loc: Location, caveSeed: number): number {
   if (loc === 'cave') {
+    if (!caveVisited.has(wx + ',' + wy)) return 0x0b0b12; // niebla (sin explorar)
     const c = caveTile(wx, wy, caveSeed);
     if (c.kind === 'wall') return 0x23232c;
     if (c.kind === 'lava') return 0xff6a1a;
@@ -92,6 +96,11 @@ let cur = { px: 0, py: 0, loc: 'surface' as Location, caveSeed: 0 };
 
 export function updateMinimap(px: number, py: number, loc: Location, caveSeed: number): void {
   cur = { px, py, loc, caveSeed };
+  if (loc === 'cave') {
+    if (caveSeed !== caveVisitedSeed) { caveVisited = new Set(); caveVisitedSeed = caveSeed; }
+    const cx = Math.round(px), cy = Math.round(py);
+    for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) if (dx * dx + dy * dy <= 20) caveVisited.add((cx + dx) + ',' + (cy + dy));
+  }
   const key = loc + ':' + Math.round(px) + ',' + Math.round(py) + ':' + caveSeed;
   if (key === lastKey) return;
   lastKey = key;

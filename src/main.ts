@@ -215,7 +215,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
       case 'inventory': togglePanel(); updatePanel(lastSlots, lastStats); break;
       case 'craft': toggleCraft(); break;
       case 'map': toggleBigMap(); break;
-      case 'jump': renderer.jump(); break;
+      case 'jump': renderer.jump(); worker.postMessage({ t: 'jump' }); break;
       case 'drink': worker.postMessage({ t: 'drink' }); break;
       case 'save': requestSave(); break;
       case 'music': toggleMusic(); break;
