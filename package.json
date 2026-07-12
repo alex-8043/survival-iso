@@ -1,9 +1,9 @@
 {
   "name": "survival-iso",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Survival isométrico 2D (pixel-art) — Fase 1: núcleo técnico. Simulación ECS headless en Web Worker + render PixiJS v8.",
+  "description": "Survival isométrico 2D (pixel-art). Simulación ECS headless en Web Worker + render PixiJS v8. Tanda H: cámara suave, zoom/paneo, biomas grandes, aldeas, oro/diamante, camas.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
