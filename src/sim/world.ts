@@ -1,10 +1,10 @@
-// Simulación autoritativa (headless) con bitECS. Mundo infinito determinista
-// (no guarda tiles: los deriva de la semilla). No importa PixiJS ni el DOM.
+// Simulación autoritativa (headless) con bitECS. Mundo infinito determinista.
 
 import { createWorld, addEntity, addComponent, defineComponent, Types } from 'bitecs';
 import {
   PLAYER_SPEED,
   SPRINT_MULT,
+  WATER_SLOW,
   INTERACT_RANGE,
   HARVEST_COOLDOWN,
   DAY_LENGTH_S,
@@ -18,9 +18,10 @@ import {
   ANIMAL_SPEED,
   ANIMAL_HEALTH,
   SPAWN_RADIUS,
+  SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, nodeAt, isWater } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, playerBlocked } from '../shared/worldgen';
 import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, ITEMS } from '../shared/items';
 import type { AnimalType } from '../shared/items';
 import type {
@@ -30,6 +31,7 @@ import type {
   AnimalSnap,
   TimeInfo,
   InvEntry,
+  SaveState,
 } from '../shared/protocol';
 
 export const Position = defineComponent({ x: Types.f32, y: Types.f32 });
@@ -80,15 +82,13 @@ export interface StepResult {
 
 const keyOf = (x: number, y: number) => x + ',' + y;
 
-export function createSim(seed: number): Sim {
+function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
   const world = createWorld();
   const playerId = addEntity(world);
   addComponent(world, Position, playerId);
-  const spawn = findSpawn(seed);
   Position.x[playerId] = spawn.x;
   Position.y[playerId] = spawn.y;
-
-  const sim: Sim = {
+  return {
     world,
     playerId,
     seed,
@@ -103,12 +103,40 @@ export function createSim(seed: number): Sim {
     spawnTimer: 0,
     inventory: {},
     stats: { health: 100, food: 100, thirst: 100, stamina: 100 },
-    timeS: DAY_LENGTH_S * 0.3, // arranca de mañana
+    timeS: DAY_LENGTH_S * 0.3,
     tick: 0,
   };
+}
 
+export function createSim(seed: number): Sim {
+  const sim = baseSim(seed, findSpawn(seed));
   for (let i = 0; i < 8; i++) trySpawnAnimal(sim);
   return sim;
+}
+
+export function createSimFromSave(save: SaveState): Sim {
+  const sim = baseSim(save.seed, { x: save.px, y: save.py });
+  sim.timeS = save.timeS;
+  sim.stats = { ...save.stats };
+  for (const e of save.inventory) sim.inventory[e.id] = e.count;
+  sim.harvested = new Map(save.harvested);
+  sim.depleted = new Set(save.depleted);
+  for (let i = 0; i < 8; i++) trySpawnAnimal(sim);
+  return sim;
+}
+
+export function serializeSim(sim: Sim): SaveState {
+  return {
+    version: SAVE_VERSION,
+    seed: sim.seed,
+    px: Position.x[sim.playerId],
+    py: Position.y[sim.playerId],
+    timeS: sim.timeS,
+    stats: { ...sim.stats },
+    inventory: invEntries(sim.inventory),
+    harvested: [...sim.harvested.entries()],
+    depleted: [...sim.depleted],
+  };
 }
 
 function findSpawn(seed: number): { x: number; y: number } {
@@ -143,17 +171,7 @@ function trySpawnAnimal(sim: Sim): void {
     const t = tileAt(x, y, sim.seed);
     if (!t.passable || isWater(t.terrain)) continue;
     const type = ANIMAL_TYPES[Math.floor(hash2(x, y, (sim.seed ^ 0xabc) | 0) * ANIMAL_TYPES.length)];
-    sim.animals.push({
-      id: sim.nextAnimalId++,
-      type,
-      x,
-      y,
-      tx: x,
-      ty: y,
-      wait: hash2(x, y, 7) * 2,
-      health: ANIMAL_HEALTH,
-      alive: true,
-    });
+    sim.animals.push({ id: sim.nextAnimalId++, type, x, y, tx: x, ty: y, wait: hash2(x, y, 7) * 2, health: ANIMAL_HEALTH, alive: true });
     return;
   }
 }
@@ -164,7 +182,7 @@ export function stepSim(sim: Sim, dt: number): StepResult {
 
   sim.timeS += dt;
 
-  // --- movimiento con sprint y colisión ---
+  // --- movimiento: agua transitable (lento), solo la nieve bloquea ---
   const inp = sim.input;
   let gx = 0;
   let gy = 0;
@@ -174,17 +192,17 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   if (inp.right) { gx += 1; gy -= 1; }
   const moving = gx !== 0 || gy !== 0;
   const sprinting = inp.sprint && moving && sim.stats.stamina > 1;
-  const speed = PLAYER_SPEED * (sprinting ? SPRINT_MULT : 1);
+  let px = Position.x[eid];
+  let py = Position.y[eid];
+  const onWater = isWater(tileAt(Math.round(px), Math.round(py), sim.seed).terrain);
+  const speed = PLAYER_SPEED * (sprinting ? SPRINT_MULT : 1) * (onWater ? WATER_SLOW : 1);
   const len = Math.hypot(gx, gy) || 1;
   const vx = moving ? (gx / len) * speed : 0;
   const vy = moving ? (gy / len) * speed : 0;
-
-  let px = Position.x[eid];
-  let py = Position.y[eid];
   const nx = px + vx * dt;
-  if (tileAt(Math.round(nx), Math.round(py), sim.seed).passable) px = nx;
+  if (!playerBlocked(tileAt(Math.round(nx), Math.round(py), sim.seed).terrain)) px = nx;
   const ny = py + vy * dt;
-  if (tileAt(Math.round(px), Math.round(ny), sim.seed).passable) py = ny;
+  if (!playerBlocked(tileAt(Math.round(px), Math.round(ny), sim.seed).terrain)) py = ny;
   Position.x[eid] = px;
   Position.y[eid] = py;
 
@@ -201,7 +219,7 @@ export function stepSim(sim: Sim, dt: number): StepResult {
     sim.stats.health = Math.min(100, sim.stats.health + HEALTH_REGEN * dt);
   }
 
-  // --- interacción (recolectar / atacar) ---
+  // --- interacción ---
   if (sim.interactActive && sim.interactTarget) {
     if (sim.harvestTimer <= 0) {
       if (doInteract(sim, res, px, py)) sim.harvestTimer = HARVEST_COOLDOWN;
@@ -212,7 +230,6 @@ export function stepSim(sim: Sim, dt: number): StepResult {
     sim.harvestTimer = 0;
   }
 
-  // --- animales ---
   updateAnimals(sim, dt);
   sim.spawnTimer -= dt;
   if (sim.spawnTimer <= 0) {
@@ -250,7 +267,6 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): boolean 
   if (!an) return false;
   if (Math.hypot(an.x - px, an.y - py) > INTERACT_RANGE) return false;
   an.health -= 1;
-  // huye un poco (suave) para poder perseguirlo y cazarlo
   an.tx = an.x + (an.x - px) * 0.4;
   an.ty = an.y + (an.y - py) * 0.4;
   an.wait = 0.8;
@@ -260,12 +276,7 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): boolean 
       const span = drop.max - drop.min + 1;
       const n = drop.min + Math.floor(hash2(an.id, drop.min, sim.seed) * span);
       addItem(sim, drop.item, n);
-      res.floaters.push({
-        text: '+' + n + ' ' + ITEMS[drop.item].name,
-        color: ITEMS[drop.item].color,
-        x: an.x,
-        y: an.y,
-      });
+      res.floaters.push({ text: '+' + n + ' ' + ITEMS[drop.item].name, color: ITEMS[drop.item].color, x: an.x, y: an.y });
     }
     res.inventoryChanged = true;
   } else {
@@ -315,12 +326,7 @@ export function consume(sim: Sim, item: string): { ok: boolean; floater?: Floate
   sim.stats.food = Math.min(100, sim.stats.food + def.food);
   return {
     ok: true,
-    floater: {
-      text: '+' + def.food + ' comida',
-      color: 0x8bc34a,
-      x: Position.x[sim.playerId],
-      y: Position.y[sim.playerId],
-    },
+    floater: { text: '+' + def.food + ' comida', color: 0x8bc34a, x: Position.x[sim.playerId], y: Position.y[sim.playerId] },
   };
 }
 

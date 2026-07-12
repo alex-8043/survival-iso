@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Survival Iso</title>
     <style>
-      :root { --fg: #cdd6f4; --gold: #f5c96b; }
+      :root { --fg: #cdd6f4; --gold: #f5c96b; --panel: #1a2016; --line: #2c3626; }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; background: #12160f; overflow: hidden;
         font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--fg); }
@@ -15,66 +15,64 @@
       /* ---------- Menú ---------- */
       #menu { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center;
         justify-content: center; background: radial-gradient(1200px 700px at 50% 30%, #1f3320, #0c110b 70%); }
-      .menu-card { text-align: center; padding: 28px 30px; }
+      .menu-card { text-align: center; padding: 26px 30px; max-height: 94vh; overflow: auto; }
+      .menu-card.wide { width: min(720px, 94vw); }
       .menu-card h1 { margin: 0 0 4px; font-size: 46px; letter-spacing: 1px; }
       .menu-card h1 span { color: var(--gold); }
-      .menu-sub { margin: 0 0 18px; opacity: .8; }
-      .skins { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 22px; }
-      .skin { background: rgba(255,255,255,.05); border: 2px solid transparent; border-radius: 12px;
-        padding: 12px 14px 10px; cursor: pointer; color: var(--fg); width: 84px; transition: .12s; }
-      .skin:hover { background: rgba(255,255,255,.1); }
-      .skin.sel { border-color: var(--gold); background: rgba(245,201,107,.12); }
-      .skin-av { position: relative; display: block; width: 34px; height: 46px; margin: 0 auto 8px; }
-      .sk-body { position: absolute; left: 7px; bottom: 0; width: 20px; height: 30px; border-radius: 6px; }
-      .sk-head { position: absolute; left: 9px; top: 0; width: 16px; height: 16px; border-radius: 50%; }
-      .skin-name { font-size: 12px; }
-      .play-btn { background: var(--gold); color: #201800; border: 0; border-radius: 10px;
-        font-size: 18px; font-weight: 700; padding: 11px 34px; cursor: pointer; }
-      .play-btn:hover { filter: brightness(1.06); }
-      .menu-hint { margin-top: 18px; font-size: 12px; opacity: .6; }
-      .menu-hint b { color: var(--gold); }
+      .menu-card h2 { margin: 0 0 16px; }
+      .menu-sub { margin: 0 0 22px; opacity: .8; }
+      .menu-btns { display: flex; gap: 12px; justify-content: center; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+      .menu-btns.col { flex-direction: column; }
+      .mbtn { background: rgba(255,255,255,.08); color: var(--fg); border: 1px solid var(--line);
+        border-radius: 10px; font-size: 16px; padding: 11px 26px; cursor: pointer; min-width: 200px; transition: .12s; }
+      .menu-btns.col .mbtn { min-width: 240px; }
+      .mbtn:hover:not(:disabled) { background: rgba(255,255,255,.15); }
+      .mbtn.primary { background: var(--gold); color: #201800; border-color: var(--gold); font-weight: 700; }
+      .mbtn.primary:hover { filter: brightness(1.06); }
+      .mbtn:disabled { opacity: .4; cursor: not-allowed; }
+      .mbtn.arrow { min-width: 0; padding: 4px 12px; font-size: 20px; line-height: 1; }
 
-      /* ---------- HUD barras ---------- */
-      #hud-stats { position: fixed; left: 12px; top: 12px; z-index: 20; display: flex;
-        flex-direction: column; gap: 6px; background: rgba(0,0,0,.34); padding: 10px 12px; border-radius: 10px; }
+      /* ---------- Personalización ---------- */
+      .cust-row { display: flex; gap: 22px; align-items: flex-start; justify-content: center; }
+      .cust-preview { background: rgba(0,0,0,.25); border: 1px solid var(--line); border-radius: 12px; padding: 8px; }
+      .cust-ctrls { display: flex; flex-direction: column; gap: 8px; flex: 1; max-width: 440px; }
+      .cat-row { display: flex; align-items: center; gap: 10px; }
+      .cat-label { width: 96px; text-align: right; font-size: 13px; opacity: .85; }
+      .cat-box { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .cat-val { min-width: 82px; font-size: 13px; }
+      .sw { width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+      .sw.sel { border-color: var(--gold); box-shadow: 0 0 0 1px #000 inset; }
+      .opt-list { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+
+      /* ---------- HUD ---------- */
+      #hud-stats { position: fixed; left: 12px; top: 12px; z-index: 20; display: flex; flex-direction: column;
+        gap: 6px; background: rgba(0,0,0,.34); padding: 10px 12px; border-radius: 10px; }
       .stat { display: flex; align-items: center; gap: 8px; }
       .stat-label { width: 64px; font-size: 12px; opacity: .85; }
       .stat-track { width: 140px; height: 10px; background: rgba(255,255,255,.12); border-radius: 6px; overflow: hidden; }
       .stat-fill { height: 100%; width: 100%; border-radius: 6px; transition: width .15s linear; }
-
-      /* ---------- Reloj ---------- */
-      #hud-clock { position: fixed; right: 12px; top: 12px; z-index: 20; display: flex; align-items: center;
-        gap: 8px; background: rgba(0,0,0,.34); padding: 8px 12px; border-radius: 10px; font-size: 14px; }
+      #hud-clock { position: fixed; right: 12px; top: 12px; z-index: 20; display: flex; align-items: center; gap: 8px;
+        background: rgba(0,0,0,.34); padding: 8px 12px; border-radius: 10px; font-size: 14px; }
       #clock-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px rgba(245,201,107,.6); }
-      #clock-day { font-weight: 700; }
-      #clock-time { opacity: .85; }
+      #clock-day { font-weight: 700; } #clock-time { opacity: .85; }
 
-      /* ---------- Panel de inventario ---------- */
-      #panel { position: fixed; inset: 0; z-index: 40; display: none; align-items: center; justify-content: center;
-        background: rgba(6,10,6,.6); }
-      .panel-card { position: relative; display: flex; gap: 18px; background: #1a2016; border: 1px solid #2c3626;
+      /* ---------- Panel ---------- */
+      #panel { position: fixed; inset: 0; z-index: 40; display: none; align-items: center; justify-content: center; background: rgba(6,10,6,.6); }
+      .panel-card { position: relative; display: flex; gap: 18px; background: var(--panel); border: 1px solid var(--line);
         border-radius: 14px; padding: 20px; width: min(680px, 92vw); }
-      .panel-close { position: absolute; right: 10px; top: 8px; background: transparent; border: 0; color: var(--fg);
-        font-size: 22px; cursor: pointer; opacity: .7; }
-      .panel-left { width: 200px; text-align: center; border-right: 1px solid #2c3626; padding-right: 16px; }
-      .avatar { position: relative; width: 70px; height: 96px; margin: 6px auto 6px; }
-      .av-body { position: absolute; left: 15px; bottom: 0; width: 40px; height: 62px; border-radius: 12px; }
-      .av-belt { position: absolute; left: 15px; bottom: 24px; width: 40px; height: 7px; }
-      .av-head { position: absolute; left: 20px; top: 0; width: 30px; height: 30px; border-radius: 50%; }
-      .av-name { font-weight: 700; margin-bottom: 12px; }
-      .pstats { display: flex; flex-direction: column; gap: 7px; }
+      .panel-close { position: absolute; right: 10px; top: 8px; background: transparent; border: 0; color: var(--fg); font-size: 22px; cursor: pointer; opacity: .7; }
+      .panel-left { width: 200px; text-align: center; border-right: 1px solid var(--line); padding-right: 16px; }
+      #panel-av { background: rgba(0,0,0,.2); border-radius: 10px; }
+      .pstats { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
       .pstat { display: flex; align-items: center; gap: 7px; font-size: 12px; }
       .pstat-l { width: 62px; text-align: left; opacity: .85; }
       .pbar { flex: 1; height: 9px; background: rgba(255,255,255,.12); border-radius: 5px; overflow: hidden; }
       .pbar div { height: 100%; }
-      .panel-right { flex: 1; }
-      .panel-right h3 { margin: 2px 0 12px; }
+      .panel-right { flex: 1; } .panel-right h3 { margin: 2px 0 12px; }
       .pslots { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
-      .pslot { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,.05);
-        padding: 8px 10px; border-radius: 8px; }
+      .pslot { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,.05); padding: 8px 10px; border-radius: 8px; }
       .pswatch { width: 16px; height: 16px; border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.35); }
-      .pname { flex: 1; font-size: 13px; }
-      .pcount { font-weight: 700; color: var(--gold); }
+      .pname { flex: 1; font-size: 13px; } .pcount { font-weight: 700; color: var(--gold); }
       .pempty { opacity: .7; font-size: 13px; }
     </style>
   </head>

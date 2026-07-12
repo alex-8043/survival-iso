@@ -14,8 +14,12 @@ export const SPRINT_MULT = 1.7; // multiplicador al correr (Shift)
 export const INTERACT_RANGE = 2.3; // distancia para recolectar/atacar (tiles)
 export const HARVEST_COOLDOWN = 0.35; // segundos entre golpes
 
-export const MAX_ELEV_PX = 44; // altura visual máxima del relieve (px)
+export const MAX_ELEV_PX = 74; // altura visual máxima del relieve (px)
 export const VIEW_TILES = 30; // radio de render alrededor del jugador (tiles)
+export const WATER_SLOW = 0.45; // multiplicador de velocidad dentro del agua
+
+export const SAVE_VERSION = 1;
+export const AUTOSAVE_S = 20; // autoguardado cada N segundos
 
 // Ciclo día/noche
 export const DAY_LENGTH_S = 480; // 8 minutos por día completo

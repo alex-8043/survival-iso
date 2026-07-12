@@ -1,6 +1,5 @@
 // Contrato de mensajes cliente <-> simulación (mismo protocolo servirá para MP).
-// El mundo es infinito y determinista: NO se envían tiles; ambos lados los
-// generan desde la semilla (ver worldgen.ts). Solo viaja el estado dinámico.
+// Mundo infinito determinista: no se envían tiles, ambos lados los generan.
 
 import type { AnimalType } from './items';
 
@@ -13,15 +12,15 @@ export interface AnimalSnap {
 }
 
 export interface Stats {
-  health: number; // 0..100
+  health: number;
   food: number;
   thirst: number;
   stamina: number;
 }
 
 export interface TimeInfo {
-  day: number; // día 1, 2, 3...
-  tod: number; // hora del día 0..1 (0 = medianoche, 0.5 = mediodía)
+  day: number;
+  tod: number; // 0..1
 }
 
 export interface InvEntry {
@@ -31,7 +30,7 @@ export interface InvEntry {
 
 export interface Snapshot {
   tick: number;
-  px: number; // jugador
+  px: number;
   py: number;
   animals: AnimalSnap[];
   stats: Stats;
@@ -46,23 +45,38 @@ export interface InputState {
   sprint: boolean;
 }
 
-// Objetivo de interacción (bajo el cursor del ratón).
 export type InteractTarget =
   | { kind: 'node'; x: number; y: number }
   | { kind: 'animal'; id: number }
   | null;
 
+// Estado serializable para guardar/continuar.
+export interface SaveState {
+  version: number;
+  seed: number;
+  px: number;
+  py: number;
+  timeS: number;
+  stats: Stats;
+  inventory: InvEntry[];
+  harvested: [string, number][];
+  depleted: string[];
+}
+
 // Cliente -> Simulación
 export type ClientMsg =
+  | { t: 'init'; mode: 'new' | 'continue'; save?: SaveState }
   | { t: 'input'; input: InputState }
   | { t: 'interact'; active: boolean; target: InteractTarget }
   | { t: 'consume'; item: string }
-  | { t: 'drink' };
+  | { t: 'drink' }
+  | { t: 'requestSave' };
 
 // Simulación -> Cliente
 export type SimMsg =
   | { t: 'ready'; seed: number; inventory: InvEntry[]; stats: Stats }
   | { t: 'snapshot'; snap: Snapshot }
-  | { t: 'harvest'; x: number; y: number; depleted: boolean } // golpe a un nodo (pulso/quitar)
+  | { t: 'harvest'; x: number; y: number; depleted: boolean }
   | { t: 'inventory'; inventory: InvEntry[] }
-  | { t: 'floater'; text: string; color: number; x: number; y: number };
+  | { t: 'floater'; text: string; color: number; x: number; y: number }
+  | { t: 'save'; state: SaveState };

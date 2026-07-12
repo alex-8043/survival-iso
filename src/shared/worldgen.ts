@@ -16,12 +16,12 @@ export const TERRAIN = {
 
 export type Terrain = number;
 
-const SCALE = 0.045; // frecuencia base del terreno (menor = accidentes más grandes)
+const SCALE = 0.045;
 
 export interface TileInfo {
   terrain: Terrain;
-  elevation: number; // 0..1 (para el relieve visual)
-  passable: boolean;
+  elevation: number; // 0..1 (relieve visual)
+  passable: boolean; // tierra caminable (para spawns de animales)
 }
 
 export function heightAt(x: number, y: number, seed: number): number {
@@ -44,7 +44,9 @@ export function tileAt(x: number, y: number, seed: number): TileInfo {
   else if (h < 0.83) terrain = TERRAIN.MOUNTAIN;
   else terrain = TERRAIN.SNOW;
 
-  const elevation = h < 0.38 ? 0 : Math.min(1, (h - 0.38) / 0.5);
+  // relieve: llanuras planas, montañas mucho más marcadas (curva)
+  const e0 = h < 0.38 ? 0 : Math.min(1, (h - 0.38) / 0.5);
+  const elevation = Math.pow(e0, 1.35);
   const passable =
     terrain !== TERRAIN.DEEP_WATER && terrain !== TERRAIN.WATER && terrain !== TERRAIN.SNOW;
   return { terrain, elevation, passable };
@@ -52,7 +54,6 @@ export function tileAt(x: number, y: number, seed: number): TileInfo {
 
 export type NodeKind = 'tree' | 'rock';
 
-// Nodo recolectable determinista en un tile (o null).
 export function nodeAt(x: number, y: number, seed: number): NodeKind | null {
   const t = tileAt(x, y, seed);
   const r = hash2(x, y, (seed ^ 0x777) | 0);
@@ -62,13 +63,11 @@ export function nodeAt(x: number, y: number, seed: number): NodeKind | null {
   return null;
 }
 
-// Entrada de cueva (solo visual por ahora) en montaña/roca.
-export function caveAt(x: number, y: number, seed: number): boolean {
-  const t = tileAt(x, y, seed);
-  if (t.terrain !== TERRAIN.MOUNTAIN && t.terrain !== TERRAIN.ROCK) return false;
-  return hash2(x, y, (seed ^ 0xcafe) | 0) < 0.03 && nodeAt(x, y, seed) === null;
-}
-
 export function isWater(terrain: Terrain): boolean {
   return terrain === TERRAIN.DEEP_WATER || terrain === TERRAIN.WATER;
+}
+
+// El jugador puede entrar al agua (lento); solo la nieve/pico es intransitable.
+export function playerBlocked(terrain: Terrain): boolean {
+  return terrain === TERRAIN.SNOW;
 }
