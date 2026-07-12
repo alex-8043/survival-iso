@@ -24,11 +24,12 @@ import {
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt } from '../shared/worldgen';
+import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
 import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor } from '../shared/items';
 import type { AnimalType } from '../shared/items';
 import { recipeById } from '../shared/recipes';
+import { SELL, BUY, questFor } from '../shared/trades';
 import { type Slot, INV_SIZE, INV_MAIN, CHEST_SIZE, makeSlots, addTo, takeFrom, countIn, slotCounts, moveSlot, sortRange, cloneSlots } from '../shared/inventory';
 import type { InputState, InteractTarget, Stats, AnimalSnap, TimeInfo, InvAddr, SaveState, Structure, Location } from '../shared/protocol';
 
@@ -66,6 +67,7 @@ export interface Sim {
   surfaceReturn: { x: number; y: number } | null;
   caveEntrance: { x: number; y: number } | null;
   riding: boolean;
+  acceptedQuests: number[];
 }
 
 export interface StepResult {
@@ -108,6 +110,7 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     stats: { health: 100, food: 100, thirst: 100, stamina: 100 },
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
     location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null, riding: false,
+    acceptedQuests: [],
   };
 }
 
@@ -137,6 +140,7 @@ export function createSimFromSave(save: SaveState): Sim {
   sim.surfaceReturn = save.surfaceReturn ?? null;
   sim.caveEntrance = save.caveEntrance ?? null;
   sim.riding = save.riding ?? false;
+  sim.acceptedQuests = save.acceptedQuests ? [...save.acceptedQuests] : [];
   if (sim.location === 'surface') for (let i = 0; i < 4; i++) trySpawnAnimal(sim);
   return sim;
 }
@@ -154,6 +158,7 @@ export function serializeSim(sim: Sim): SaveState {
     surfaceReturn: sim.surfaceReturn ?? undefined,
     caveEntrance: sim.caveEntrance ?? undefined,
     riding: sim.riding,
+    acceptedQuests: [...sim.acceptedQuests],
   };
 }
 
@@ -218,7 +223,11 @@ function trySpawnAnimal(sim: Sim): void {
     const y = Math.round(py + Math.sin(ang) * dist);
     const t = tileAt(x, y, sim.seed);
     if (!t.passable || isWater(t.terrain)) continue;
-    const type = ANIMAL_TYPES[Math.floor(hash2(x, y, (sim.seed ^ 0xabc) | 0) * ANIMAL_TYPES.length)];
+    let type: AnimalType;
+    if (t.terrain === TERRAIN.SWAMP) type = 'frog';
+    else if (t.terrain === TERRAIN.JUNGLE) type = 'monkey';
+    else if (t.terrain === TERRAIN.DESERT || t.terrain === TERRAIN.SNOW) continue; // biomas sin ganado
+    else type = ANIMAL_TYPES[Math.floor(hash2(x, y, (sim.seed ^ 0xabc) | 0) * ANIMAL_TYPES.length)];
     sim.animals.push({ id: sim.nextAnimalId++, type, x, y, tx: x, ty: y, wait: hash2(x, y, 7) * 2, health: ANIMAL_INFO[type].health, alive: true, layer: 'surface' });
     return;
   }
@@ -366,6 +375,11 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
       res.floaters.push({ text: 'Necesitas pico de piedra', color: 0xff8a8a, x: tgt.x, y: tgt.y });
       return HARVEST_COOLDOWN * 2;
     }
+    // El oro y el diamante exigen pico de hierro o mejor.
+    if ((kind === 'gold' || kind === 'diamond') && !(tool && tool.kind === 'pickaxe' && tool.tier >= 3)) {
+      res.floaters.push({ text: 'Necesitas pico de hierro', color: 0xff8a8a, x: tgt.x, y: tgt.y });
+      return HARVEST_COOLDOWN * 2;
+    }
     let amt = nodeAmount(sim, tgt.x, tgt.y, kind);
     if (amt <= 0) return 0;
     amt -= 1;
@@ -487,6 +501,46 @@ export function board(sim: Sim, id: number): { floater?: Floater } {
   Position.x[sim.playerId] = s.x;
   Position.y[sim.playerId] = s.y;
   return { floater: { text: 'Subes a la barca', color: 0x9edb8a, x: s.x, y: s.y } };
+}
+
+// Dormir: de noche adelanta el tiempo hasta el amanecer.
+export function sleep(sim: Sim): { ok: boolean; floater?: Floater } {
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  const tod = (sim.timeS % DAY_LENGTH_S) / DAY_LENGTH_S;
+  if (tod >= 0.27 && tod <= 0.72) return { ok: false, floater: { text: 'Solo puedes dormir de noche', color: 0xffd05a, x: px, y: py } };
+  const cur = sim.timeS % DAY_LENGTH_S, base = sim.timeS - cur, morning = 0.3 * DAY_LENGTH_S;
+  sim.timeS = cur < morning ? base + morning : base + DAY_LENGTH_S + morning;
+  sim.stats.stamina = 100;
+  return { ok: true, floater: { text: 'Duermes hasta el amanecer', color: 0x9edb8a, x: px, y: py } };
+}
+
+// Comercio con aldeanos (compra/venta por monedas).
+export function trade(sim: Sim, action: 'buy' | 'sell', item: string): { ok: boolean; floater?: Floater } {
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (action === 'sell') {
+    const price = SELL[item];
+    if (!price || invCount(sim, item) <= 0) return { ok: false };
+    takeFrom(sim.inv, item, 1); addItem(sim, 'coin', price);
+    return { ok: true };
+  }
+  const price = BUY[item];
+  if (!price) return { ok: false };
+  if (invCount(sim, 'coin') < price) return { ok: false, floater: { text: 'No tienes monedas', color: 0xff8a8a, x: px, y: py } };
+  takeFrom(sim.inv, 'coin', price); addItem(sim, item, 1);
+  return { ok: true };
+}
+
+export function acceptQuest(sim: Sim, id: number): void {
+  if (!sim.acceptedQuests.includes(id)) sim.acceptedQuests.push(id);
+}
+export function completeQuest(sim: Sim, id: number): { ok: boolean; floater?: Floater } {
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (!sim.acceptedQuests.includes(id)) return { ok: false };
+  const q = questFor(id);
+  if (invCount(sim, q.item) < q.count) return { ok: false, floater: { text: 'Te faltan ' + (q.count - invCount(sim, q.item)) + ' ' + (ITEMS[q.item]?.name || q.item), color: 0xff8a8a, x: px, y: py } };
+  takeFrom(sim.inv, q.item, q.count); addItem(sim, 'coin', q.reward);
+  sim.acceptedQuests = sim.acceptedQuests.filter((v) => v !== id);
+  return { ok: true, floater: { text: '+' + q.reward + ' monedas', color: 0xf2cf5a, x: px, y: py } };
 }
 
 export function consume(sim: Sim, item: string): { ok: boolean; floater?: Floater } {

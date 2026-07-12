@@ -4,7 +4,8 @@
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
 import { TILE_W, TILE_H, MAX_ELEV_PX, BLOCK_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
-import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, type CaveTile } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, villageCenterAt, villageLayoutAt, VILLAGE_SCAN, type CaveTile } from '../shared/worldgen';
+import { villagerId } from '../shared/trades';
 import { avatarCanvas, type AvatarAction, type Customization, type HeldTool } from './avatar';
 import { ITEMS } from '../shared/items';
 import { getCode, keyLabel } from './keybinds';
@@ -17,6 +18,7 @@ const TERRAIN_COLORS: Record<number, number> = {
   [TERRAIN.GRASS]: 0x5a9e4f, [TERRAIN.FOREST]: 0x468a41, [TERRAIN.ROCK]: 0x8f8b7c,
   [TERRAIN.MOUNTAIN]: 0x7c746b, [TERRAIN.SNOW]: 0xe9edf2,
   [TERRAIN.DESERT]: 0xe3cf8a, [TERRAIN.JUNGLE]: 0x2f7d3a, [TERRAIN.SWAMP]: 0x5e6f42,
+  [TERRAIN.SWAMP_WATER]: 0x3c4a34,
 };
 const ANIM_FRAMES: Record<AvatarAction, number> = { idle: 1, walk: 6, run: 6, swing: 6, swim: 6 };
 const ANIM_RATE: Record<AvatarAction, number> = { idle: 0.5, walk: 1.5, run: 2.6, swing: 2.2, swim: 1.3 };
@@ -49,6 +51,17 @@ export class GameRenderer {
   readonly depleted = new Set<string>();
   jumpOff = 0; jumpVel = 0;
 
+  // Cámara: zoom (rueda), suavizado de desnivel y paneo (clic rueda).
+  zoom = 1; camLift = 0; panX = 0; panY = 0;
+  panning = false; panCX = 0; panCY = 0;
+
+  // Aldeas (render + clic sobre aldeanos/camas).
+  readonly villages = new Map<string, Container[]>();
+  readonly villagerTiles = new Map<string, { id: number; x: number; y: number }>();
+  readonly villageBeds = new Set<string>();
+  talkTarget: { id: number; x: number; y: number } | null = null;
+  sleepTarget: { x: number; y: number } | null = null;
+
   seed = 0;
   player: Sprite | null = null;
   boat: Container | null = null;
@@ -80,6 +93,8 @@ export class GameRenderer {
   onOpenChest: (id: number) => void = () => {};
   onBoardBoat: (id: number) => void = () => {};
   onEat: (item: string) => void = () => {};
+  onSleep: () => void = () => {};
+  onTalk: (id: number) => void = () => {};
 
   async init(parent: HTMLElement): Promise<void> {
     this.app = new Application();
@@ -104,9 +119,26 @@ export class GameRenderer {
       const r = cv.getBoundingClientRect();
       this.mouseX = e.clientX - r.left;
       this.mouseY = e.clientY - r.top;
+      if (this.panning) { // paneo con el botón de la rueda
+        this.panX += e.clientX - this.panCX;
+        this.panY += e.clientY - this.panCY;
+        this.panCX = e.clientX; this.panCY = e.clientY;
+      }
     });
     cv.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Zoom con la rueda del ratón (0.6x .. 2.2x).
+    cv.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const f = e.deltaY > 0 ? 1 / 1.12 : 1.12;
+      this.zoom = Math.max(0.6, Math.min(2.2, this.zoom * f));
+    }, { passive: false });
     cv.addEventListener('pointerdown', (e) => {
+      if (e.button === 1) { // clic rueda: iniciar paneo
+        e.preventDefault();
+        this.panning = true; this.panCX = e.clientX; this.panCY = e.clientY;
+        this.app.canvas.style.cursor = 'grabbing';
+        return;
+      }
       if (e.button === 2) { // clic derecho: comer si hay comida seleccionada
         const it = this.selected?.item;
         if (it && ITEMS[it]?.food) this.onEat(it);
@@ -117,16 +149,22 @@ export class GameRenderer {
         this.onPlace(this.placeTile.x, this.placeTile.y, this.selected.item);
         return;
       }
+      if (this.talkTarget) { this.onTalk(this.talkTarget.id); return; }
+      if (this.sleepTarget) { this.onSleep(); return; }
       if (this.structTarget) {
         if (this.structTarget.type === 'chest') this.onOpenChest(this.structTarget.id);
         else if (this.structTarget.type === 'boat') this.onBoardBoat(this.structTarget.id);
+        else if (this.structTarget.type === 'bed') this.onSleep();
         else this.onOpenStation(this.structTarget.type);
         return;
       }
       this.active = true;
       this.emitInteract();
     });
-    window.addEventListener('pointerup', () => { this.active = false; this.emitInteract(); });
+    window.addEventListener('pointerup', (e) => {
+      if (e.button === 1 && this.panning) { this.panning = false; this.app.canvas.style.cursor = 'default'; return; }
+      this.active = false; this.emitInteract();
+    });
     this.app.ticker.add((t) => this.update(t.deltaMS));
     // eslint-disable-next-line no-console
     console.log('[client] pixi listo');
@@ -275,7 +313,7 @@ export class GameRenderer {
       if (this.depleted.has(key)) continue;
       want.add(key);
       if (!this.nodes.has(key)) {
-        const sprite = this.makeNode(kind);
+        const sprite = kind === 'tree' && this.loc === 'surface' ? this.makeTree(tileAt(x, y, this.seed).terrain) : this.makeNode(kind);
         const s = gridToScreen(x, y);
         sprite.x = s.x; sprite.y = s.y - this.elevAtL(x, y) * MAX_ELEV_PX; sprite.zIndex = depthOf(x, y);
         this.entities.addChild(sprite);
@@ -301,6 +339,45 @@ export class GameRenderer {
       }
     }
     for (const [key, sp] of this.decor) if (!wantD.has(key)) { this.entities.removeChild(sp); sp.destroy(); this.decor.delete(key); }
+
+    // Aldeas (sólo superficie): casas + camas + pozo + aldeanos.
+    this.villagerTiles.clear();
+    this.villageBeds.clear();
+    if (this.loc === 'surface') {
+      const wantV = new Set<string>();
+      const M = VILLAGE_SCAN;
+      for (let dy = -R - M; dy <= R + M; dy++) for (let dx = -R - M; dx <= R + M; dx++) {
+        const cx = ptx + dx, cy = pty + dy;
+        if (!villageCenterAt(cx, cy, this.seed)) continue;
+        const vkey = 'v' + cx + ',' + cy;
+        wantV.add(vkey);
+        const layout = villageLayoutAt(cx, cy, this.seed);
+        for (const h of layout.houses) this.villageBeds.add(h.bed.x + ',' + h.bed.y);
+        for (const v of layout.villagers) this.villagerTiles.set(v.x + ',' + v.y, { id: villagerId(v.x, v.y, this.seed), x: v.x, y: v.y });
+        if (!this.villages.has(vkey)) {
+          const parts: Container[] = [];
+          const well = this.makeWell(); this.placeAt(well, cx, cy, 0.05); parts.push(well);
+          for (const h of layout.houses) {
+            const house = this.makeVillageHouse((this.seed ^ (h.x * 31 + h.y)) | 0); this.placeAt(house, h.x, h.y, 0.12); parts.push(house);
+            const bed = this.makeStructure('bed'); this.placeAt(bed, h.bed.x, h.bed.y, 0.04); parts.push(bed);
+          }
+          for (const v of layout.villagers) { const vs = this.makeVillager(villagerId(v.x, v.y, this.seed)); this.placeAt(vs, v.x, v.y, 0.1); parts.push(vs); }
+          for (const p of parts) this.entities.addChild(p);
+          this.villages.set(vkey, parts);
+        }
+      }
+      for (const [vkey, parts] of this.villages) if (!wantV.has(vkey)) { for (const p of parts) { this.entities.removeChild(p); p.destroy(); } this.villages.delete(vkey); }
+    } else if (this.villages.size) {
+      for (const [, parts] of this.villages) for (const p of parts) { this.entities.removeChild(p); p.destroy(); }
+      this.villages.clear();
+    }
+  }
+
+  private placeAt(sprite: Container, x: number, y: number, depthBias: number): void {
+    const s = gridToScreen(x, y);
+    sprite.x = s.x;
+    sprite.y = s.y - this.elevAtL(x, y) * MAX_ELEV_PX;
+    sprite.zIndex = depthOf(x, y) + depthBias;
   }
 
   private makeDecor(kind: string): Container {
@@ -340,6 +417,20 @@ export class GameRenderer {
     } else if (kind === 'fern') {
       for (const a of [-0.9, -0.4, 0, 0.4, 0.9]) { c.moveTo(0, 0); c.lineTo(Math.sin(a) * 9, -12 - Math.cos(a) * 3); }
       c.stroke({ width: 1.8, color: 0x2f7d3a });
+    } else if (kind === 'lily') {
+      // nenúfar plano sobre el agua del pantano
+      c.ellipse(0, 0, 9, 5).fill({ color: 0x3f7a3a });
+      c.ellipse(-2, -1, 6, 3.2).fill({ color: 0x4f9a45 });
+      c.poly([0, 0, 8, -2.5, 8, 2.5]).fill({ color: 0x2c4a28 }); // muesca
+      c.circle(2, -1.5, 2.2).fill({ color: 0xf0e2ee });
+      c.circle(2, -1.5, 1.1).fill({ color: 0xe58ab8 });
+    } else if (kind === 'vine') {
+      // planta trepadora / liana de jungla en el suelo
+      c.moveTo(0, 0); c.lineTo(-1, -16); c.stroke({ width: 2, color: 0x3f7a34 });
+      for (const [ly, side] of [[-4, 1], [-8, -1], [-12, 1]] as const) {
+        c.ellipse(side * 4, ly, 3.4, 2).fill({ color: 0x4f9a3f });
+      }
+      c.circle(-1, -16, 1.6).fill({ color: 0x66b84f });
     } else {
       c.ellipse(-3, 0, 4, 2.4).fill({ color: 0x55555f });
       c.ellipse(3, -1, 3, 2).fill({ color: 0x484852 });
@@ -349,7 +440,7 @@ export class GameRenderer {
   }
 
   private viewRadius(): number {
-    return Math.ceil((this.app.screen.width / TILE_W + this.app.screen.height / TILE_H) / 2) + 6;
+    return Math.ceil((this.app.screen.width / TILE_W + this.app.screen.height / TILE_H) / (2 * this.zoom)) + 6;
   }
 
   private drawTerrain(ptx: number, pty: number): void {
@@ -357,8 +448,8 @@ export class GameRenderer {
     g.clear();
     const R = this.viewRadius();
     const hw = TILE_W / 2, hh = TILE_H / 2;
-    const halfW = this.app.screen.width / 2 + TILE_W;
-    const halfH = this.app.screen.height / 2 + TILE_H + (this.loc === 'cave' ? MAX_ELEV_PX : 270);
+    const halfW = this.app.screen.width / (2 * this.zoom) + TILE_W;
+    const halfH = this.app.screen.height / (2 * this.zoom) + TILE_H + (this.loc === 'cave' ? MAX_ELEV_PX : 270);
     const cave = this.loc === 'cave';
     for (let d = -2 * R; d <= 2 * R; d++) {
       for (let dx = Math.max(-R, d - R); dx <= Math.min(R, d + R); dx++) {
@@ -383,8 +474,9 @@ export class GameRenderer {
           const info = tileAt(x, y, this.seed);
           if (info.water) {
             const col = TERRAIN_COLORS[info.terrain] ?? 0x3a79a6;
+            const swamp = info.terrain === TERRAIN.SWAMP_WATER;
             g.poly([s.x, s.y - hh, s.x + hw, s.y, s.x, s.y + hh, s.x - hw, s.y]).fill({ color: col });
-            g.poly([s.x, s.y - hh * 0.5, s.x + hw * 0.5, s.y, s.x, s.y + hh * 0.5, s.x - hw * 0.5, s.y]).fill({ color: 0x4f93c4, alpha: 0.5 });
+            g.poly([s.x, s.y - hh * 0.5, s.x + hw * 0.5, s.y, s.x, s.y + hh * 0.5, s.x - hw * 0.5, s.y]).fill({ color: swamp ? 0x556b3a : 0x4f93c4, alpha: swamp ? 0.4 : 0.5 });
           } else {
             const lvl = info.level;
             const base = TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f;
@@ -442,6 +534,43 @@ export class GameRenderer {
     return c;
   }
 
+  // Árbol con variante por bioma: jungla (grande, con lianas), pantano (sauce
+  // oscuro y caído) o normal (hierba/bosque).
+  private makeTree(terrain: number): Container {
+    const c = new Graphics();
+    if (terrain === TERRAIN.JUNGLE) {
+      c.ellipse(0, -2, 15, 7).fill({ color: 0x000000, alpha: 0.24 });
+      c.rect(-4, -34, 8, 34).fill({ color: 0x5f4327 });
+      c.rect(-4, -34, 3, 34).fill({ color: 0x6f512f });
+      c.ellipse(0, -46, 22, 20).fill({ color: 0x2a7d34 });
+      c.ellipse(-11, -54, 14, 14).fill({ color: 0x34992f });
+      c.ellipse(11, -50, 13, 13).fill({ color: 0x2f8a3a });
+      c.ellipse(2, -60, 12, 11).fill({ color: 0x3aa33f });
+      // lianas colgantes
+      for (const [lx, lh] of [[-14, 20], [-6, 26], [8, 22], [15, 16]] as const) {
+        c.rect(lx, -46, 1.6, lh).fill({ color: 0x3f7a34 });
+        c.circle(lx + 0.8, -46 + lh, 1.6).fill({ color: 0x4f9a3f });
+      }
+    } else if (terrain === TERRAIN.SWAMP) {
+      c.ellipse(0, -2, 13, 6).fill({ color: 0x000000, alpha: 0.24 });
+      c.rect(-3.5, -24, 7, 24).fill({ color: 0x4a4436 });
+      c.rect(-3.5, -24, 2.5, 24).fill({ color: 0x574f3e });
+      c.ellipse(0, -30, 18, 12).fill({ color: 0x4d5f36 });
+      c.ellipse(-9, -33, 11, 9).fill({ color: 0x586c3d });
+      c.ellipse(9, -31, 10, 8).fill({ color: 0x455632 });
+      // ramas caídas (sauce)
+      for (const [lx, lh] of [[-15, 16], [-7, 22], [6, 20], [14, 14]] as const) {
+        c.rect(lx, -30, 1.4, lh).fill({ color: 0x5a6b3c });
+      }
+    } else {
+      c.ellipse(0, -2, 12, 6).fill({ color: 0x000000, alpha: 0.22 });
+      c.rect(-3, -20, 6, 20).fill({ color: 0x6b4a2b });
+      c.ellipse(0, -28, 16, 18).fill({ color: 0x2f7d3a });
+      c.ellipse(-6, -34, 10, 11).fill({ color: 0x3a9247 });
+    }
+    return c;
+  }
+
   private makeNode(kind: string): Container {
     const c = new Graphics();
     if (kind === 'tree') {
@@ -463,6 +592,22 @@ export class GameRenderer {
       c.circle(2, -7, 2.4).fill({ color: 0xc79066 });
       c.circle(-5, -6, 1.7).fill({ color: 0xb37c4c });
       c.circle(5, -11, 1.5).fill({ color: 0xd8a86e });
+    } else if (kind === 'gold') {
+      c.ellipse(0, -1, 12, 6).fill({ color: 0x000000, alpha: 0.22 });
+      c.ellipse(0, -7, 14, 10).fill({ color: 0x83888f });
+      c.ellipse(-4, -10, 8, 6).fill({ color: 0x9aa0ab });
+      c.circle(2, -7, 2.8).fill({ color: 0xf2cf5a });
+      c.circle(-5, -6, 2).fill({ color: 0xe0b840 });
+      c.circle(5, -11, 1.8).fill({ color: 0xffe38a });
+      c.circle(-1, -12, 1.3).fill({ color: 0xf2cf5a });
+    } else if (kind === 'diamond') {
+      c.ellipse(0, -1, 12, 6).fill({ color: 0x000000, alpha: 0.22 });
+      c.ellipse(0, -7, 14, 10).fill({ color: 0x7a828f });
+      c.ellipse(-4, -10, 8, 6).fill({ color: 0x929aa8 });
+      for (const [gx, gy] of [[2, -7], [-5, -6], [5, -11]] as const) {
+        c.poly([gx, gy - 3, gx + 2.6, gy - 0.6, gx, gy + 3, gx - 2.6, gy - 0.6]).fill({ color: 0x6fe6e0 });
+        c.poly([gx, gy - 3, gx + 2.6, gy - 0.6, gx, gy - 0.6]).fill({ color: 0xb6f5f2 });
+      }
     } else {
       c.ellipse(0, -1, 12, 6).fill({ color: 0x000000, alpha: 0.22 });
       c.ellipse(0, -6, 14, 10).fill({ color: 0x7a7f8a });
@@ -508,6 +653,16 @@ export class GameRenderer {
       g.poly([-20, 0, 20, 0, 13, 10, -13, 10]).fill({ color: 0x8a5a2b });
       g.poly([-20, 0, 20, 0, 16, -3, -16, -3]).fill({ color: 0xa06a34 });
       g.rect(-1.5, -12, 3, 12).fill({ color: 0x6a4a28 });
+    } else if (type === 'bed') {
+      const hw = (TILE_W / 2) * 0.8, hh = (TILE_H / 2) * 0.8;
+      g.ellipse(0, 5, hw, 6).fill({ color: 0x000000, alpha: 0.18 });
+      g.poly([0, -hh, hw, 0, 0, hh, -hw, 0]).fill({ color: 0x6b4a2b });
+      g.poly([0, -hh, hw, 0, 0, hh, -hw, 0]).stroke({ width: 1.5, color: 0x8a5a2b });
+      const iw = hw * 0.74, ih = hh * 0.74, lift = 4;
+      g.poly([0, -ih - lift, iw, -lift, 0, ih - lift, -iw, -lift]).fill({ color: 0xc0392b });
+      g.poly([0, -ih - lift, iw, -lift, 0, -lift, -iw, -lift]).fill({ color: 0xd6503f });
+      const pw = iw * 0.4, ph = ih * 0.4, pcx = -iw * 0.4, pcy = -ih * 0.4 - lift;
+      g.poly([pcx, pcy - ph, pcx + pw, pcy, pcx, pcy + ph, pcx - pw, pcy]).fill({ color: 0xf0ece0 });
     } else {
       const hw = (TILE_W / 2) * 0.72, hh = (TILE_H / 2) * 0.72, H = 20;
       g.ellipse(0, 2, hw, 6).fill({ color: 0x000000, alpha: 0.18 });
@@ -526,6 +681,62 @@ export class GameRenderer {
     return g;
   }
 
+  private makeWell(): Container {
+    const g = new Graphics();
+    const hw = (TILE_W / 2) * 0.58, hh = (TILE_H / 2) * 0.58;
+    g.ellipse(0, 3, hw + 2, 6).fill({ color: 0x000000, alpha: 0.2 });
+    g.poly([-hw, -6, 0, -6 + hh, 0, 6, -hw, 0]).fill({ color: 0x6b717a });
+    g.poly([hw, -6, 0, -6 + hh, 0, 6, hw, 0]).fill({ color: 0x5c626b });
+    g.poly([0, -6 - hh, hw, -6, 0, -6 + hh, -hw, -6]).fill({ color: 0x9aa0ab });
+    g.ellipse(0, -6, hw * 0.55, hh * 0.55).fill({ color: 0x24405a });
+    g.rect(-hw + 2, -24, 2, 18).fill({ color: 0x6b4a2b });
+    g.rect(hw - 4, -24, 2, 18).fill({ color: 0x6b4a2b });
+    g.poly([0, -32, hw + 3, -21, -hw - 3, -21]).fill({ color: 0x8a4b32 });
+    return g;
+  }
+
+  private makeVillageHouse(variant: number): Container {
+    const g = new Graphics();
+    const hw = (TILE_W / 2) * 0.94, hh = (TILE_H / 2) * 0.94, H = 24, RH = 16;
+    const wallR = 0xbfa878, wallL = 0xa1875f;
+    const red = (variant & 1) === 0;
+    const rF = red ? 0x9a4f32 : 0x5f7a44, rR = red ? 0x843f27 : 0x516a39;
+    const rBL = red ? 0xb0623c : 0x6f8a4e, rBR = red ? 0xa5583a : 0x647f47;
+    g.ellipse(0, 5, hw, 7).fill({ color: 0x000000, alpha: 0.2 });
+    // muros (cara izquierda y derecha)
+    g.poly([-hw, -H, 0, -H + hh, 0, hh, -hw, 0]).fill({ color: wallL });
+    g.poly([hw, -H, 0, -H + hh, 0, hh, hw, 0]).fill({ color: wallR });
+    // puerta y ventana en la cara derecha
+    g.poly([5, -12, 11, -9, 11, 0, 5, -3]).fill({ color: 0x4a2f1c });
+    g.poly([2, -18, 5, -16.5, 5, -12.5, 2, -14]).fill({ color: 0x6a4a2b });
+    // vigas de madera (esquinas)
+    g.rect(-1, -H + hh - 1, 2, hh).fill({ color: 0x6b4a2b });
+    // techo a cuatro aguas
+    const ax = 0, ay = -H - RH;
+    const N = [0, -H - hh], E = [hw, -H], S = [0, -H + hh], W = [-hw, -H];
+    g.poly([ax, ay, N[0], N[1], E[0], E[1]]).fill({ color: rBR });
+    g.poly([ax, ay, N[0], N[1], W[0], W[1]]).fill({ color: rBL });
+    g.poly([ax, ay, E[0], E[1], S[0], S[1]]).fill({ color: rR });
+    g.poly([ax, ay, W[0], W[1], S[0], S[1]]).fill({ color: rF });
+    return g;
+  }
+
+  private makeVillager(id: number): Container {
+    const g = new Graphics();
+    const robe = [0x6a8a4a, 0x8a5a6a, 0x5a6a8a, 0x9a7a3a][Math.abs(id) % 4];
+    g.ellipse(0, 0, 7, 3.2).fill({ color: 0x000000, alpha: 0.2 });
+    g.poly([-7, 0, 7, 0, 5, -20, -5, -20]).fill({ color: robe });
+    g.roundRect(-8, -18, 4, 10, 2).fill({ color: darker(robe, 0.85) });
+    g.roundRect(4, -18, 4, 10, 2).fill({ color: darker(robe, 0.85) });
+    g.poly([-5, -20, 5, -20, 4, -24, -4, -24]).fill({ color: darker(robe, 0.8) });
+    g.circle(0, -27, 5).fill({ color: 0xc9a06a });
+    g.ellipse(0, -25, 1.7, 3).fill({ color: 0xb98d5a });
+    g.circle(-2, -28, 0.9).fill({ color: 0x241a12 });
+    g.circle(2, -28, 0.9).fill({ color: 0x241a12 });
+    g.poly([-5, -28, 5, -28, 4, -32, -4, -32]).fill({ color: 0x4a3a2a });
+    return g;
+  }
+
   private makeAnimal(type: AnimalType): Container {
     const g = new Graphics();
     if (type === 'bat') {
@@ -540,6 +751,34 @@ export class GameRenderer {
       g.poly([2.4, by - 2.5, 1, by - 6, 0, by - 2.5]).fill({ color: 0x1f1a26 });
       g.circle(-1, by - 0.5, 0.7).fill({ color: 0xe0655a });
       g.circle(1, by - 0.5, 0.7).fill({ color: 0xe0655a });
+      return g;
+    }
+    if (type === 'frog') {
+      g.ellipse(0, -1, 8, 3).fill({ color: 0x000000, alpha: 0.2 });
+      g.ellipse(-8, -2, 3, 2).fill({ color: 0x3f7a34 });
+      g.ellipse(8, -2, 3, 2).fill({ color: 0x3f7a34 });
+      g.ellipse(0, -5, 9, 6).fill({ color: 0x4f9a3f });
+      g.ellipse(0, -6, 6, 4).fill({ color: 0x63b552 });
+      g.circle(-3.5, -10, 2.4).fill({ color: 0x63b552 });
+      g.circle(3.5, -10, 2.4).fill({ color: 0x63b552 });
+      g.circle(-3.5, -10.5, 1.2).fill({ color: 0x1a1a12 });
+      g.circle(3.5, -10.5, 1.2).fill({ color: 0x1a1a12 });
+      g.moveTo(-4, -4); g.lineTo(4, -4); g.stroke({ width: 1, color: 0x2c5023 });
+      return g;
+    }
+    if (type === 'monkey') {
+      g.ellipse(0, -1, 9, 4).fill({ color: 0x000000, alpha: 0.2 });
+      g.moveTo(7, -6); g.quadraticCurveTo(16, -10, 12, -18); g.stroke({ width: 2.4, color: 0x6b4a2b });
+      g.rect(-8, -14, 3, 8).fill({ color: 0x6b4a2b });
+      g.rect(5, -14, 3, 8).fill({ color: 0x6b4a2b });
+      g.roundRect(-6, -16, 12, 13, 5).fill({ color: 0x7a5433 });
+      g.ellipse(0, -6, 5, 4).fill({ color: 0xc9a06a });
+      g.circle(-5, -22, 2.2).fill({ color: 0x7a5433 });
+      g.circle(5, -22, 2.2).fill({ color: 0x7a5433 });
+      g.circle(0, -20, 6).fill({ color: 0x7a5433 });
+      g.ellipse(0, -19, 4, 3.4).fill({ color: 0xc9a06a });
+      g.circle(-2, -21, 1).fill({ color: 0x1a1a12 });
+      g.circle(2, -21, 1).fill({ color: 0x1a1a12 });
       return g;
     }
     g.ellipse(0, -1, 14, 5).fill({ color: 0x000000, alpha: 0.2 });
@@ -595,22 +834,31 @@ export class GameRenderer {
     const k = Math.min(1, dt * 20);
 
     const ps = gridToScreen(this.prx, this.pry);
-    const py = ps.y - this.elevAtL(this.prx, this.pry) * MAX_ELEV_PX;
+    const rawLift = this.elevAtL(this.prx, this.pry) * MAX_ELEV_PX;
+    // Suaviza el desnivel: subir/bajar bloques ya no da tirones a la cámara.
+    this.camLift += (rawLift - this.camLift) * Math.min(1, dt * 7);
+    const py = ps.y - rawLift;          // posición exacta del jugador (sprite)
+    const camY = ps.y - this.camLift;   // centro de cámara suavizado en vertical
     if (this.jumpVel !== 0 || this.jumpOff > 0) {
       this.jumpOff += this.jumpVel * dt;
       this.jumpVel -= 900 * dt;
       if (this.jumpOff <= 0) { this.jumpOff = 0; this.jumpVel = 0; }
     }
     this.player.x = ps.x; this.player.y = py - this.jumpOff; this.player.zIndex = depthOf(this.prx, this.pry) + 0.3;
-    this.world.x = this.app.screen.width / 2 - ps.x;
-    this.world.y = this.app.screen.height / 2 - py;
+    // El paneo se recentra poco a poco mientras caminas.
+    if (this.spdEMA > 0.5 && !this.panning) { this.panX *= 0.9; this.panY *= 0.9; }
+    const z = this.zoom;
+    this.world.scale.set(z);
+    this.world.x = this.app.screen.width / 2 - ps.x * z + this.panX;
+    this.world.y = this.app.screen.height / 2 - camY * z + this.panY;
 
     if (this.exitMarker) {
       if (this.loc === 'cave') {
         const e0 = gridToScreen(0, 0);
         this.exitMarker.visible = true;
-        this.exitMarker.x = this.world.x + e0.x;
-        this.exitMarker.y = this.world.y + e0.y - this.elevAtL(0, 0) * MAX_ELEV_PX;
+        this.exitMarker.scale.set(z);
+        this.exitMarker.x = this.world.x + e0.x * z;
+        this.exitMarker.y = this.world.y + (e0.y - this.elevAtL(0, 0) * MAX_ELEV_PX) * z;
       } else this.exitMarker.visible = false;
     }
 
@@ -679,9 +927,11 @@ export class GameRenderer {
     let next: InteractTarget = null;
     this.placeTile = null;
     this.structTarget = null;
+    this.talkTarget = null;
+    this.sleepTarget = null;
 
     if (this.mouseX >= 0) {
-      const wx = this.mouseX - this.world.x, wy = this.mouseY - this.world.y;
+      const wx = (this.mouseX - this.world.x) / this.zoom, wy = (this.mouseY - this.world.y) / this.zoom;
       if (placing) {
         const t = this.pickTile(wx, wy);
         this.placeTile = t;
@@ -695,8 +945,22 @@ export class GameRenderer {
       } else {
         const pick = this.pickTile(wx, wy);
         const st = this.structTiles.get(pick.x + ',' + pick.y);
-        if (st && (st.type === 'crafting_table' || st.type === 'furnace' || st.type === 'forge' || st.type === 'chest' || st.type === 'boat') && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) {
+        // aldeano bajo el cursor (por cercanía en pantalla, más tolerante)
+        let vbest = 26; let vhit: { id: number; x: number; y: number } | null = null;
+        for (const v of this.villagerTiles.values()) {
+          const vs = gridToScreen(v.x, v.y);
+          const vsy = vs.y - this.elevAtL(v.x, v.y) * MAX_ELEV_PX - 16;
+          const d = Math.hypot(vs.x - wx, vsy - wy);
+          if (d < vbest && Math.hypot(v.x - this.prx, v.y - this.pry) <= INTERACT_RANGE + 0.8) { vbest = d; vhit = v; }
+        }
+        if (st && (st.type === 'crafting_table' || st.type === 'furnace' || st.type === 'forge' || st.type === 'chest' || st.type === 'boat' || st.type === 'bed') && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) {
           this.structTarget = { id: st.id, type: st.type, x: pick.x, y: pick.y };
+          this.app.canvas.style.cursor = 'pointer';
+        } else if (vhit) {
+          this.talkTarget = vhit;
+          this.app.canvas.style.cursor = 'pointer';
+        } else if (this.villageBeds.has(pick.x + ',' + pick.y) && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE + 0.6) {
+          this.sleepTarget = { x: pick.x, y: pick.y };
           this.app.canvas.style.cursor = 'pointer';
         } else {
           let bestD = 24;
@@ -727,8 +991,13 @@ export class GameRenderer {
       const sp = gridToScreen(st.x, st.y), hw = TILE_W / 2, hh = TILE_H / 2, yy = sp.y - this.elevAtL(st.x, st.y) * MAX_ELEV_PX;
       this.highlight.poly([sp.x, yy - hh, sp.x + hw, yy, sp.x, yy + hh, sp.x - hw, yy]).stroke({ width: 2, color: 0x8bd1ff, alpha: 0.95 });
     }
+    const npc = this.talkTarget ?? this.sleepTarget;
+    if (npc) {
+      const sp = gridToScreen(npc.x, npc.y), hw = TILE_W / 2, hh = TILE_H / 2, yy = sp.y - this.elevAtL(npc.x, npc.y) * MAX_ELEV_PX;
+      this.highlight.poly([sp.x, yy - hh, sp.x + hw, yy, sp.x, yy + hh, sp.x - hw, yy]).stroke({ width: 2, color: this.talkTarget ? 0xffd05a : 0x8bd1ff, alpha: 0.95 });
+    }
 
-    const key = placing ? 'p' : this.structTarget ? 's' + this.structTarget.x + ',' + this.structTarget.y : next ? (next.kind === 'node' ? 'n' + next.x + ',' + next.y : 'a' + next.id) : '-';
+    const key = placing ? 'p' : this.talkTarget ? 't' + this.talkTarget.id : this.sleepTarget ? 'z' + this.sleepTarget.x + ',' + this.sleepTarget.y : this.structTarget ? 's' + this.structTarget.x + ',' + this.structTarget.y : next ? (next.kind === 'node' ? 'n' + next.x + ',' + next.y : 'a' + next.id) : '-';
     if (key !== this.lastSentKey) {
       this.lastSentKey = key;
       this.app.canvas.setAttribute('data-target', placing ? 'place' : this.structTarget ? (this.structTarget.type === 'chest' ? 'chest' : 'station') : next ? next.kind : 'none');

@@ -1,7 +1,7 @@
 // Minimapa cenital: siempre visible arriba-izquierda y versión grande con M.
 // Muestrea el mundo determinista alrededor del jugador.
 
-import { tileAt, caveTile, caveNodeAt, caveEntranceAt, springAt, TERRAIN, type Terrain } from '../shared/worldgen';
+import { tileAt, caveTile, caveNodeAt, caveEntranceAt, springAt, villageCenterAt, TERRAIN, type Terrain } from '../shared/worldgen';
 import type { Location } from '../shared/protocol';
 
 const TCOL: Record<number, number> = {
@@ -9,6 +9,7 @@ const TCOL: Record<number, number> = {
   [TERRAIN.GRASS]: 0x5a9e4f, [TERRAIN.FOREST]: 0x3f7d3a, [TERRAIN.ROCK]: 0x8f8b7c,
   [TERRAIN.MOUNTAIN]: 0x7c746b, [TERRAIN.SNOW]: 0xe9edf2,
   [TERRAIN.DESERT]: 0xe3cf8a, [TERRAIN.JUNGLE]: 0x2f7d3a, [TERRAIN.SWAMP]: 0x5e6f42,
+  [TERRAIN.SWAMP_WATER]: 0x3c4a34,
 };
 const SMALL_R = 38, SMALL_TP = 2;
 const BIG_R = 92, BIG_TP = 3;
@@ -50,6 +51,9 @@ function draw(cv: HTMLCanvasElement, R: number, tp: number, px: number, py: numb
       if ((tt === TERRAIN.MOUNTAIN || tt === TERRAIN.ROCK) && caveEntranceAt(wx, wy, seed)) {
         ctx.fillStyle = '#ffcf4a';
         ctx.fillRect((dx + R) * tp - 1, (dy + R) * tp - 1, tp + 2, tp + 2);
+      } else if (villageCenterAt(wx, wy, seed)) {
+        ctx.fillStyle = '#e07b3a';
+        ctx.fillRect((dx + R) * tp - 2, (dy + R) * tp - 2, tp + 4, tp + 4);
       }
     }
   }

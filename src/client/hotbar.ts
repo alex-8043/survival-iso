@@ -37,15 +37,7 @@ export function initHotbar(onSelect: (s: HotbarSel) => void): void {
       if (n >= 1 && n <= INV_HOTBAR) { idx = n - 1; render(); emit(); }
     }
   });
-  window.addEventListener('wheel', (e) => {
-    const dir = e.deltaY > 0 ? 1 : -1;
-    for (let s = 0; s < INV_HOTBAR; s++) {
-      idx = (idx + dir + INV_HOTBAR) % INV_HOTBAR;
-      if (hot[idx]) break;
-    }
-    render();
-    emit();
-  }, { passive: true });
+  // La rueda del ratón ahora hace zoom; la hotbar se cambia con 1-9 o clic.
   render();
   emit();
 }

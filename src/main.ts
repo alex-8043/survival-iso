@@ -12,6 +12,7 @@ import { initCraft, toggleCraft, updateCraft, openStationCraft } from './client/
 import { initControls, toggleControls, showControls } from './client/controls';
 import { initPause, togglePause, isPaused, isCapturing } from './client/pausemenu';
 import { initMinimap, updateMinimap, toggleBigMap } from './client/minimap';
+import { initVillageDialog, openVillageDialog, updateVillageDialog, isVillageOpen, closeVillageDialog } from './client/villagedialog';
 import { loadBinds, actionFor } from './client/keybinds';
 import { loadGame, saveGame } from './client/save';
 import { startMusic, toggleMusic, isMusicOn } from './client/music';
@@ -68,6 +69,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
 
   let lastSlots: Slot[] = save?.inv ?? [];
   let lastStats: Stats = save?.stats ?? { health: 100, food: 100, thirst: 100, stamina: 100 };
+  let acceptedQuests: number[] = save?.acceptedQuests ?? [];
   let manualSave = false;
   let pendingMenu = false;
 
@@ -88,6 +90,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
     updateCraft(inv);
     updatePanel(lastSlots, lastStats);
     updateChestInv(lastSlots);
+    if (isVillageOpen()) updateVillageDialog(lastSlots, acceptedQuests);
     renderer.hasBoat = countIn(inv, 'boat') > 0;
   };
 
@@ -117,6 +120,10 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
       case 'inventory':
         refreshInv(m.inv);
         break;
+      case 'quests':
+        acceptedQuests = m.ids;
+        if (isVillageOpen()) updateVillageDialog(lastSlots, acceptedQuests);
+        break;
       case 'chest':
         setChestItems(m.id, m.items);
         break;
@@ -142,8 +149,16 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   renderer.onOpenStation = (type) => openStationCraft(type);
   renderer.onOpenChest = (id) => { worker.postMessage({ t: 'openChest', id }); openChestPanel(id, lastSlots); };
   renderer.onBoardBoat = (id) => worker.postMessage({ t: 'board', id });
+  renderer.onSleep = () => worker.postMessage({ t: 'sleep' });
+  renderer.onTalk = (id) => openVillageDialog(id, lastSlots, acceptedQuests);
   const sendEat = (item: string): void => worker.postMessage({ t: 'consume', item });
   renderer.onEat = sendEat;
+  initVillageDialog({
+    onBuy: (item) => worker.postMessage({ t: 'trade', action: 'buy', item }),
+    onSell: (item) => worker.postMessage({ t: 'trade', action: 'sell', item }),
+    onAccept: (id) => worker.postMessage({ t: 'acceptQuest', id }),
+    onComplete: (id) => worker.postMessage({ t: 'completeQuest', id }),
+  });
 
   type Addr = import('./shared/protocol').InvAddr;
   const sendMove = (from: Addr, to: Addr): void => worker.postMessage({ t: 'move', from, to });
@@ -180,6 +195,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
     const a = actionFor(e.code);
     if (!a) return;
     e.preventDefault();
+    if (a === 'pause' && isVillageOpen()) { closeVillageDialog(); return; }
     if (a === 'pause') { togglePause(); return; }
     if (isPaused()) return; // el resto de acciones se bloquean en pausa
     switch (a) {

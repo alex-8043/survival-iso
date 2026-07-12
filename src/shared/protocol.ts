@@ -84,6 +84,7 @@ export interface SaveState {
   surfaceReturn?: { x: number; y: number };
   caveEntrance?: { x: number; y: number };
   riding?: boolean;
+  acceptedQuests?: number[];
 }
 
 // Cliente -> Simulación
@@ -97,6 +98,10 @@ export type ClientMsg =
   | { t: 'consume'; item?: string }
   | { t: 'drink' }
   | { t: 'toggleCave' }
+  | { t: 'sleep' }
+  | { t: 'trade'; action: 'buy' | 'sell'; item: string }
+  | { t: 'acceptQuest'; id: number }
+  | { t: 'completeQuest'; id: number }
   | { t: 'board'; id: number }
   | { t: 'move'; from: InvAddr; to: InvAddr }
   | { t: 'quickMove'; from: InvAddr; id: number }
@@ -112,6 +117,7 @@ export type SimMsg =
   | { t: 'snapshot'; snap: Snapshot }
   | { t: 'harvest'; x: number; y: number; depleted: boolean }
   | { t: 'inventory'; inv: Slot[] }
+  | { t: 'quests'; ids: number[] }
   | { t: 'chest'; id: number; items: Slot[] }
   | { t: 'structures'; structures: Structure[] }
   | { t: 'floater'; text: string; color: number; x: number; y: number }

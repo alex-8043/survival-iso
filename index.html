@@ -179,6 +179,31 @@
       #slot-menu .sm-split { display: flex; gap: 4px; }
       #slot-menu .sm-split input { width: 52px; background: rgba(0,0,0,.3); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px; font-size: 13px; }
       #slot-menu .sm-split button { flex: 1; text-align: center; }
+
+      /* Diálogo del aldeano (comercio + misión) */
+      #village { position: fixed; inset: 0; z-index: 45; display: none; align-items: center; justify-content: center; background: rgba(6,10,6,.6); }
+      .village-card { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; width: min(620px, 94vw); max-height: 90vh; overflow: auto; }
+      .village-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; padding-right: 26px; }
+      .village-head h3 { margin: 0; }
+      .village-coins { display: inline-flex; align-items: center; gap: 5px; font-weight: 700; color: var(--gold); font-size: 15px; }
+      .vcoin { display: inline-block; width: 15px; height: 15px; background-size: contain; background-repeat: no-repeat; background-position: center; vertical-align: middle; }
+      .vsec { margin-bottom: 12px; }
+      .vsec h4 { margin: 6px 0 8px; color: var(--gold); font-size: 13px; }
+      .vcols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      .vquest { display: flex; align-items: center; gap: 12px; background: rgba(245,201,107,.08); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+      .vq-txt { flex: 1; font-size: 13px; }
+      .vq-sub { opacity: .8; font-size: 12px; margin-top: 3px; display: flex; align-items: center; gap: 4px; }
+      .vrow { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+      .vrow:last-child { border-bottom: 0; }
+      .vrow-ic { width: 22px; height: 22px; background-size: contain; background-repeat: no-repeat; background-position: center; flex-shrink: 0; }
+      .vrow-name { flex: 1; font-size: 13px; }
+      .vrow-have { font-size: 11px; opacity: .7; }
+      .vbtn { display: inline-flex; align-items: center; gap: 4px; background: var(--gold); color: #201800; border: 0; border-radius: 7px; padding: 6px 11px; font-weight: 700; font-size: 12px; cursor: pointer; white-space: nowrap; }
+      .vbtn.sm { padding: 4px 9px; }
+      .vbtn:disabled { background: rgba(255,255,255,.1); color: rgba(255,255,255,.4); cursor: not-allowed; }
+      .vbtn .vcoin { width: 13px; height: 13px; }
+      .vempty { opacity: .7; font-size: 12px; padding: 6px 0; }
+      @media (max-width: 560px) { .vcols { grid-template-columns: 1fr; } }
     </style>
   </head>
   <body>

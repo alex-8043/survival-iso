@@ -4,6 +4,7 @@ import {
   createSim, createSimFromSave, serializeSim, stepSim, consume, drink, craft, place, board,
   timeInfo, animalSnaps, invSlots, playerPos, onWaterOf, toggleCave, onEntranceOf, bestFood,
   moveItem, quickMove, moveAmount, sortInv, sortChest, chestItems,
+  sleep, trade, acceptQuest, completeQuest,
 } from './world';
 import type { Sim, StepResult } from './world';
 import { WORLD_SEED, TICK_MS } from '../shared/constants';
@@ -23,6 +24,9 @@ function postChest(id: number): void {
   if (!sim) return;
   const items = chestItems(sim, id);
   if (items) post({ t: 'chest', id, items });
+}
+function postQuests(): void {
+  if (sim) post({ t: 'quests', ids: [...sim.acceptedQuests] });
 }
 
 function startLoop(): void {
@@ -49,6 +53,7 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
   if (m.t === 'init') {
     sim = m.mode === 'continue' && m.save ? createSimFromSave(m.save) : createSim(WORLD_SEED);
     post({ t: 'ready', seed: sim.seed, inv: invSlots(sim), stats: sim.stats, structures: sim.structures, loc: sim.location, caveSeed: sim.caveSeed });
+    postQuests();
     startLoop();
     return;
   }
@@ -97,6 +102,20 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
   } else if (m.t === 'board') {
     const r = board(sim, m.id);
     post({ t: 'structures', structures: sim.structures });
+    if (r.floater) post({ t: 'floater', ...r.floater });
+  } else if (m.t === 'sleep') {
+    const r = sleep(sim);
+    if (r.floater) post({ t: 'floater', ...r.floater });
+  } else if (m.t === 'trade') {
+    const r = trade(sim, m.action, m.item);
+    if (r.ok) postInv();
+    if (r.floater) post({ t: 'floater', ...r.floater });
+  } else if (m.t === 'acceptQuest') {
+    acceptQuest(sim, m.id);
+    postQuests();
+  } else if (m.t === 'completeQuest') {
+    const r = completeQuest(sim, m.id);
+    if (r.ok) { postInv(); postQuests(); }
     if (r.floater) post({ t: 'floater', ...r.floater });
   } else if (m.t === 'requestSave') post({ t: 'save', state: serializeSim(sim) });
 };

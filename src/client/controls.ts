@@ -13,7 +13,11 @@ function rowsHtml(): string {
     ['Colocar bloque / estación / barca', 'Clic (con objeto)'],
     ['Comer (comida seleccionada)', 'Clic derecho'],
     ['Abrir mesa / cofre · Subir a barca', 'Clic sobre ella'],
-    ['Seleccionar objeto', '1 – 9 / Rueda'],
+    ['Hablar / comerciar con aldeano', 'Clic sobre él'],
+    ['Dormir (cama)', 'Clic sobre la cama'],
+    ['Seleccionar objeto', '1 – 9'],
+    ['Zoom', 'Rueda del ratón'],
+    ['Mover cámara (paneo)', 'Clic rueda + arrastrar'],
   ];
   const dyn = ACTIONS.map((a) => [ACTION_LABELS[a], keyLabel(getCode(a))] as [string, string]);
   return [...fixed, ...dyn]
