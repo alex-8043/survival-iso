@@ -7,14 +7,12 @@
     <style>
       :root { --fg: #cdd6f4; --gold: #f5c96b; --panel: #1a2016; --line: #2c3626; }
       * { box-sizing: border-box; }
-      html, body { margin: 0; height: 100%; background: #12160f; overflow: hidden;
-        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--fg); }
+      html, body { margin: 0; height: 100%; background: #12160f; overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--fg); }
       #app { position: fixed; inset: 0; }
       canvas { display: block; }
 
-      /* ---------- Menú ---------- */
-      #menu { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center;
-        justify-content: center; background: radial-gradient(1200px 700px at 50% 30%, #1f3320, #0c110b 70%); }
+      /* Menú */
+      #menu { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: radial-gradient(1200px 700px at 50% 30%, #1f3320, #0c110b 70%); }
       .menu-card { text-align: center; padding: 26px 30px; max-height: 94vh; overflow: auto; }
       .menu-card.wide { width: min(720px, 94vw); }
       .menu-card h1 { margin: 0 0 4px; font-size: 46px; letter-spacing: 1px; }
@@ -23,16 +21,14 @@
       .menu-sub { margin: 0 0 22px; opacity: .8; }
       .menu-btns { display: flex; gap: 12px; justify-content: center; align-items: center; margin-top: 18px; flex-wrap: wrap; }
       .menu-btns.col { flex-direction: column; }
-      .mbtn { background: rgba(255,255,255,.08); color: var(--fg); border: 1px solid var(--line);
-        border-radius: 10px; font-size: 16px; padding: 11px 26px; cursor: pointer; min-width: 200px; transition: .12s; }
+      .mbtn { background: rgba(255,255,255,.08); color: var(--fg); border: 1px solid var(--line); border-radius: 10px; font-size: 16px; padding: 11px 26px; cursor: pointer; min-width: 200px; transition: .12s; }
       .menu-btns.col .mbtn { min-width: 240px; }
       .mbtn:hover:not(:disabled) { background: rgba(255,255,255,.15); }
       .mbtn.primary { background: var(--gold); color: #201800; border-color: var(--gold); font-weight: 700; }
-      .mbtn.primary:hover { filter: brightness(1.06); }
       .mbtn:disabled { opacity: .4; cursor: not-allowed; }
       .mbtn.arrow { min-width: 0; padding: 4px 12px; font-size: 20px; line-height: 1; }
 
-      /* ---------- Personalización ---------- */
+      /* Personalización */
       .cust-row { display: flex; gap: 22px; align-items: flex-start; justify-content: center; }
       .cust-preview { background: rgba(0,0,0,.25); border: 1px solid var(--line); border-radius: 12px; padding: 8px; }
       .cust-ctrls { display: flex; flex-direction: column; gap: 8px; flex: 1; max-width: 440px; }
@@ -44,22 +40,27 @@
       .sw.sel { border-color: var(--gold); box-shadow: 0 0 0 1px #000 inset; }
       .opt-list { display: flex; flex-direction: column; gap: 10px; align-items: center; }
 
-      /* ---------- HUD ---------- */
-      #hud-stats { position: fixed; left: 12px; top: 12px; z-index: 20; display: flex; flex-direction: column;
-        gap: 6px; background: rgba(0,0,0,.34); padding: 10px 12px; border-radius: 10px; }
+      /* HUD */
+      #hud-stats { position: fixed; left: 12px; top: 12px; z-index: 20; display: flex; flex-direction: column; gap: 6px; background: rgba(0,0,0,.34); padding: 10px 12px; border-radius: 10px; }
       .stat { display: flex; align-items: center; gap: 8px; }
       .stat-label { width: 64px; font-size: 12px; opacity: .85; }
       .stat-track { width: 140px; height: 10px; background: rgba(255,255,255,.12); border-radius: 6px; overflow: hidden; }
       .stat-fill { height: 100%; width: 100%; border-radius: 6px; transition: width .15s linear; }
-      #hud-clock { position: fixed; right: 12px; top: 12px; z-index: 20; display: flex; align-items: center; gap: 8px;
-        background: rgba(0,0,0,.34); padding: 8px 12px; border-radius: 10px; font-size: 14px; }
+      #hud-clock { position: fixed; right: 12px; top: 12px; z-index: 20; display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,.34); padding: 8px 12px; border-radius: 10px; font-size: 14px; }
       #clock-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px rgba(245,201,107,.6); }
       #clock-day { font-weight: 700; } #clock-time { opacity: .85; }
 
-      /* ---------- Panel ---------- */
+      /* Hotbar */
+      #hotbar { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 25; display: flex; gap: 6px; background: rgba(0,0,0,.4); padding: 6px; border-radius: 10px; }
+      .hslot { position: relative; width: 46px; height: 46px; border-radius: 8px; background: rgba(255,255,255,.06); border: 2px solid transparent; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+      .hslot.sel { border-color: var(--gold); background: rgba(245,201,107,.14); }
+      .hicon { width: 24px; height: 24px; border-radius: 5px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.35); }
+      .hkey { position: absolute; top: 2px; left: 4px; font-size: 10px; opacity: .55; }
+      .hcount { position: absolute; bottom: 2px; right: 4px; font-size: 11px; font-weight: 700; color: var(--gold); }
+
+      /* Panel de inventario */
       #panel { position: fixed; inset: 0; z-index: 40; display: none; align-items: center; justify-content: center; background: rgba(6,10,6,.6); }
-      .panel-card { position: relative; display: flex; gap: 18px; background: var(--panel); border: 1px solid var(--line);
-        border-radius: 14px; padding: 20px; width: min(680px, 92vw); }
+      .panel-card { position: relative; display: flex; gap: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; width: min(680px, 92vw); }
       .panel-close { position: absolute; right: 10px; top: 8px; background: transparent; border: 0; color: var(--fg); font-size: 22px; cursor: pointer; opacity: .7; }
       .panel-left { width: 200px; text-align: center; border-right: 1px solid var(--line); padding-right: 16px; }
       #panel-av { background: rgba(0,0,0,.2); border-radius: 10px; }
@@ -74,6 +75,21 @@
       .pswatch { width: 16px; height: 16px; border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.35); }
       .pname { flex: 1; font-size: 13px; } .pcount { font-weight: 700; color: var(--gold); }
       .pempty { opacity: .7; font-size: 13px; }
+
+      /* Crafteo */
+      #craft { position: fixed; inset: 0; z-index: 42; display: none; align-items: center; justify-content: center; background: rgba(6,10,6,.6); }
+      .craft-card-wrap { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; width: min(760px, 94vw); max-height: 88vh; overflow: auto; }
+      .craft-card-wrap h3 { margin: 0 0 14px; }
+      .craft-cat h4 { margin: 14px 0 8px; color: var(--gold); font-size: 14px; }
+      .craft-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+      .craft-card { background: rgba(255,255,255,.05); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+      .craft-name { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
+      .craft-ing { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+      .ing { font-size: 11px; padding: 2px 6px; border-radius: 5px; background: rgba(255,255,255,.06); }
+      .ing.ok { color: #a7e0a0; } .ing.no { color: #e79a9a; }
+      .needs { font-size: 11px; opacity: .7; margin-bottom: 6px; }
+      .craft-btn { width: 100%; background: var(--gold); color: #201800; border: 0; border-radius: 7px; padding: 6px; font-weight: 700; cursor: pointer; }
+      .craft-btn:disabled { background: rgba(255,255,255,.1); color: rgba(255,255,255,.4); cursor: not-allowed; }
     </style>
   </head>
   <body>

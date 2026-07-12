@@ -1,107 +1,94 @@
-// Render con PixiJS v8: mundo infinito con relieve, nodos, animales, jugador
-// (con avatar personalizado), oscurecimiento nocturno y selección con el ratón
-// corregida para el terreno con elevación.
+// Render con PixiJS v8: mundo con relieve, nodos, animales, jugador animado,
+// estructuras colocables, barca, día/noche y selección/colocación con el ratón.
 
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
-import { TILE_W, TILE_H, MAX_ELEV_PX, INTERACT_RANGE, NIGHT_MAX_DARK } from '../shared/constants';
+import { TILE_W, TILE_H, MAX_ELEV_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
-import { tileAt, nodeAt, TERRAIN } from '../shared/worldgen';
-import { avatarCanvas, type Customization } from './avatar';
-import type { InteractTarget, Snapshot } from '../shared/protocol';
+import { tileAt, nodeAt, isWater, playerBlocked, TERRAIN } from '../shared/worldgen';
+import { avatarCanvas, type AvatarAction, type Customization } from './avatar';
+import { ITEMS } from '../shared/items';
+import type { InteractTarget, Snapshot, Structure } from '../shared/protocol';
 import type { AnimalType } from '../shared/items';
+import type { HotbarSel } from './hotbar';
 
 const TERRAIN_COLORS: Record<number, number> = {
-  [TERRAIN.DEEP_WATER]: 0x24507a,
-  [TERRAIN.WATER]: 0x3a79a6,
-  [TERRAIN.SAND]: 0xd9c48a,
-  [TERRAIN.GRASS]: 0x5a9e4f,
-  [TERRAIN.FOREST]: 0x468a41,
-  [TERRAIN.ROCK]: 0x8f8b7c,
-  [TERRAIN.MOUNTAIN]: 0x7c746b,
-  [TERRAIN.SNOW]: 0xe9edf2,
+  [TERRAIN.DEEP_WATER]: 0x24507a, [TERRAIN.WATER]: 0x3a79a6, [TERRAIN.SAND]: 0xd9c48a,
+  [TERRAIN.GRASS]: 0x5a9e4f, [TERRAIN.FOREST]: 0x468a41, [TERRAIN.ROCK]: 0x8f8b7c,
+  [TERRAIN.MOUNTAIN]: 0x7c746b, [TERRAIN.SNOW]: 0xe9edf2,
 };
+const ANIM_FRAMES: Record<AvatarAction, number> = { idle: 1, walk: 6, run: 6, swing: 6, swim: 6 };
+const ANIM_RATE: Record<AvatarAction, number> = { idle: 0.5, walk: 1.5, run: 2.6, swing: 2.2, swim: 1.3 };
+const PLAYER_SCALE = 0.85;
 
 function darker(color: number, f: number): number {
-  const r = ((color >> 16) & 0xff) * f;
-  const g = ((color >> 8) & 0xff) * f;
-  const b = (color & 0xff) * f;
-  return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
+  return (Math.round(((color >> 16) & 0xff) * f) << 16) | (Math.round(((color >> 8) & 0xff) * f) << 8) | Math.round((color & 0xff) * f);
 }
-
-interface RenderNode {
-  sprite: Container;
-  pulse: number;
-}
-interface RenderAnimal {
-  sprite: Container;
-  rx: number;
-  ry: number;
-  tx: number;
-  ty: number;
-}
-interface FloatText {
-  text: Text;
-  life: number;
-}
-
 function elevAt(x: number, y: number, seed: number): number {
   return tileAt(Math.round(x), Math.round(y), seed).elevation;
 }
+
+interface RenderNode { sprite: Container; pulse: number; }
+interface RenderAnimal { sprite: Container; rx: number; ry: number; tx: number; ty: number; }
+interface FloatText { text: Text; life: number; }
 
 export class GameRenderer {
   app!: Application;
   readonly world = new Container();
   readonly ground = new Graphics();
   readonly highlight = new Graphics();
+  readonly ghost = new Graphics();
   readonly entities = new Container();
   readonly darkness = new Graphics();
 
   readonly nodes = new Map<string, RenderNode>();
   readonly animals = new Map<number, RenderAnimal>();
+  readonly structs = new Map<number, Container>();
   readonly floats: FloatText[] = [];
   readonly depleted = new Set<string>();
 
   seed = 0;
-  player: Container | null = null;
-  prx = 0;
-  pry = 0;
-  ptile = '';
-  tod = 0.35;
+  player: Sprite | null = null;
+  boat: Container | null = null;
+  frames: Record<string, Texture[]> = {};
+  animT = 0;
+  prx = 0; pry = 0; lastPrx = 0; lastPry = 0;
+  ptile = ''; tod = 0.35; onWater = false; hasBoat = false;
 
-  mouseX = -1;
-  mouseY = -1;
-  active = false;
+  mouseX = -1; mouseY = -1; active = false;
   target: InteractTarget = null;
+  selected: HotbarSel | null = null;
+  placeTile: { x: number; y: number } | null = null;
   private lastSentKey = 'x';
   onInteract: (active: boolean, target: InteractTarget) => void = () => {};
+  onPlace: (x: number, y: number, item: string) => void = () => {};
 
   async init(parent: HTMLElement): Promise<void> {
     this.app = new Application();
     await this.app.init({ background: 0x1a2b1a, antialias: false, resizeTo: window, preference: 'webgl' });
     parent.appendChild(this.app.canvas);
-
     this.entities.sortableChildren = true;
     this.world.addChild(this.ground);
     this.world.addChild(this.highlight);
+    this.world.addChild(this.ghost);
     this.world.addChild(this.entities);
     this.app.stage.addChild(this.world);
     this.app.stage.addChild(this.darkness);
 
-    const canvas = this.app.canvas;
-    canvas.addEventListener('pointermove', (e) => {
-      const r = canvas.getBoundingClientRect();
+    const cv = this.app.canvas;
+    cv.addEventListener('pointermove', (e) => {
+      const r = cv.getBoundingClientRect();
       this.mouseX = e.clientX - r.left;
       this.mouseY = e.clientY - r.top;
     });
-    canvas.addEventListener('pointerdown', () => {
+    cv.addEventListener('pointerdown', () => {
+      if (this.selected?.kind === 'place' && this.selected.item && this.placeTile) {
+        this.onPlace(this.placeTile.x, this.placeTile.y, this.selected.item);
+        return;
+      }
       this.active = true;
       this.emitInteract();
     });
-    window.addEventListener('pointerup', () => {
-      this.active = false;
-      this.emitInteract();
-    });
-
+    window.addEventListener('pointerup', () => { this.active = false; this.emitInteract(); });
     this.app.ticker.add((t) => this.update(t.deltaMS));
     // eslint-disable-next-line no-console
     console.log('[client] pixi listo');
@@ -109,66 +96,68 @@ export class GameRenderer {
 
   start(seed: number, custom: Customization, px = 0, py = 0): void {
     this.seed = seed;
-    this.prx = px;
-    this.pry = py;
-    this.player = this.makePlayerSprite(custom);
+    this.prx = this.lastPrx = px;
+    this.pry = this.lastPry = py;
+    this.frames = {};
+    for (const action of Object.keys(ANIM_FRAMES) as AvatarAction[]) {
+      const n = ANIM_FRAMES[action];
+      const arr: Texture[] = [];
+      for (let i = 0; i < n; i++) arr.push(Texture.from(avatarCanvas(custom, PLAYER_SCALE, action, i / n)));
+      this.frames[action] = arr;
+    }
+    this.player = new Sprite(this.frames.idle[0]);
+    this.player.anchor.set(0.5, 0.9375);
     this.entities.addChild(this.player);
+    this.boat = this.makeBoat();
+    this.boat.visible = false;
+    this.entities.addChild(this.boat);
     this.ptile = '';
     // eslint-disable-next-line no-console
     console.log('[client] mundo iniciado, seed', seed);
   }
 
   applySnapshot(snap: Snapshot): void {
-    this.prx = snap.px;
-    this.pry = snap.py;
-    this.tod = snap.time.tod;
+    this.prx = snap.px; this.pry = snap.py; this.tod = snap.time.tod; this.onWater = snap.onWater;
     const seen = new Set<number>();
     for (const a of snap.animals) {
       if (!a.alive) continue;
       seen.add(a.id);
       let ra = this.animals.get(a.id);
-      if (!ra) {
-        const sprite = this.makeAnimal(a.type);
+      if (!ra) { const sprite = this.makeAnimal(a.type); this.entities.addChild(sprite); ra = { sprite, rx: a.x, ry: a.y, tx: a.x, ty: a.y }; this.animals.set(a.id, ra); }
+      ra.tx = a.x; ra.ty = a.y;
+    }
+    for (const [id, ra] of this.animals) if (!seen.has(id)) { this.entities.removeChild(ra.sprite); ra.sprite.destroy(); this.animals.delete(id); }
+  }
+
+  setStructures(list: Structure[]): void {
+    const seen = new Set<number>();
+    for (const s of list) {
+      seen.add(s.id);
+      if (!this.structs.has(s.id)) {
+        const sprite = this.makeStructure(s.type);
+        const p = gridToScreen(s.x, s.y);
+        sprite.x = p.x;
+        sprite.y = p.y - tileAt(s.x, s.y, this.seed).elevation * MAX_ELEV_PX;
+        sprite.zIndex = depthOf(s.x, s.y) + 0.15;
         this.entities.addChild(sprite);
-        ra = { sprite, rx: a.x, ry: a.y, tx: a.x, ty: a.y };
-        this.animals.set(a.id, ra);
-      }
-      ra.tx = a.x;
-      ra.ty = a.y;
-    }
-    for (const [id, ra] of this.animals) {
-      if (!seen.has(id)) {
-        this.entities.removeChild(ra.sprite);
-        ra.sprite.destroy();
-        this.animals.delete(id);
+        this.structs.set(s.id, sprite);
       }
     }
+    for (const [id, sp] of this.structs) if (!seen.has(id)) { this.entities.removeChild(sp); sp.destroy(); this.structs.delete(id); }
   }
 
   onHarvest(x: number, y: number, depleted: boolean): void {
     const key = x + ',' + y;
     const rn = this.nodes.get(key);
     if (rn) rn.pulse = 1;
-    if (depleted) {
-      this.depleted.add(key);
-      if (rn) {
-        this.entities.removeChild(rn.sprite);
-        rn.sprite.destroy();
-        this.nodes.delete(key);
-      }
-    }
+    if (depleted) { this.depleted.add(key); if (rn) { this.entities.removeChild(rn.sprite); rn.sprite.destroy(); this.nodes.delete(key); } }
   }
 
   spawnFloat(label: string, color: number, gx: number, gy: number): void {
-    const t = new Text({
-      text: label,
-      style: { fill: color, fontSize: 15, fontFamily: 'system-ui, sans-serif', fontWeight: '700', stroke: { color: 0x0a0a12, width: 3 } },
-    });
+    const t = new Text({ text: label, style: { fill: color, fontSize: 15, fontFamily: 'system-ui, sans-serif', fontWeight: '700', stroke: { color: 0x0a0a12, width: 3 } } });
     t.anchor.set(0.5);
     const s = gridToScreen(gx, gy);
-    t.x = s.x;
-    t.y = s.y - elevAt(gx, gy, this.seed) * MAX_ELEV_PX - 34;
-    t.zIndex = 2_000_000;
+    t.x = s.x; t.y = s.y - elevAt(gx, gy, this.seed) * MAX_ELEV_PX - 34; t.zIndex = 2_000_000;
     this.entities.addChild(t);
     this.floats.push({ text: t, life: 0 });
   }
@@ -177,33 +166,20 @@ export class GameRenderer {
     this.drawTerrain(ptx, pty);
     const R = this.viewRadius();
     const want = new Set<string>();
-    for (let dy = -R; dy <= R; dy++) {
-      for (let dx = -R; dx <= R; dx++) {
-        const x = ptx + dx;
-        const y = pty + dy;
-        const key = x + ',' + y;
-        if (!this.depleted.has(key) && nodeAt(x, y, this.seed)) {
-          want.add(key);
-          if (!this.nodes.has(key)) {
-            const kind = nodeAt(x, y, this.seed)!;
-            const sprite = this.makeNode(kind);
-            const s = gridToScreen(x, y);
-            sprite.x = s.x;
-            sprite.y = s.y - tileAt(x, y, this.seed).elevation * MAX_ELEV_PX;
-            sprite.zIndex = depthOf(x, y);
-            this.entities.addChild(sprite);
-            this.nodes.set(key, { sprite, pulse: 0 });
-          }
+    for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+      const x = ptx + dx, y = pty + dy, key = x + ',' + y;
+      if (!this.depleted.has(key) && nodeAt(x, y, this.seed)) {
+        want.add(key);
+        if (!this.nodes.has(key)) {
+          const sprite = this.makeNode(nodeAt(x, y, this.seed)!);
+          const s = gridToScreen(x, y);
+          sprite.x = s.x; sprite.y = s.y - tileAt(x, y, this.seed).elevation * MAX_ELEV_PX; sprite.zIndex = depthOf(x, y);
+          this.entities.addChild(sprite);
+          this.nodes.set(key, { sprite, pulse: 0 });
         }
       }
     }
-    for (const [key, rn] of this.nodes) {
-      if (!want.has(key)) {
-        this.entities.removeChild(rn.sprite);
-        rn.sprite.destroy();
-        this.nodes.delete(key);
-      }
-    }
+    for (const [key, rn] of this.nodes) if (!want.has(key)) { this.entities.removeChild(rn.sprite); rn.sprite.destroy(); this.nodes.delete(key); }
   }
 
   private viewRadius(): number {
@@ -214,25 +190,19 @@ export class GameRenderer {
     const g = this.ground;
     g.clear();
     const R = this.viewRadius();
-    const hw = TILE_W / 2;
-    const hh = TILE_H / 2;
+    const hw = TILE_W / 2, hh = TILE_H / 2;
     const halfW = this.app.screen.width / 2 + TILE_W;
     const halfH = this.app.screen.height / 2 + TILE_H + MAX_ELEV_PX;
     for (let d = -2 * R; d <= 2 * R; d++) {
-      const dxMin = Math.max(-R, d - R);
-      const dxMax = Math.min(R, d + R);
-      for (let dx = dxMin; dx <= dxMax; dx++) {
+      for (let dx = Math.max(-R, d - R); dx <= Math.min(R, d + R); dx++) {
         const dy = d - dx;
-        const relX = (dx - dy) * hw;
-        const relY = (dx + dy) * hh;
+        const relX = (dx - dy) * hw, relY = (dx + dy) * hh;
         if (relX < -halfW || relX > halfW || relY < -halfH || relY > halfH) continue;
-        const x = ptx + dx;
-        const y = pty + dy;
+        const x = ptx + dx, y = pty + dy;
         const info = tileAt(x, y, this.seed);
         const base = TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f;
         const s = gridToScreen(x, y);
-        const lift = info.elevation * MAX_ELEV_PX;
-        const topY = s.y - lift;
+        const lift = info.elevation * MAX_ELEV_PX, topY = s.y - lift;
         if (lift > 3) {
           g.poly([s.x - hw, topY, s.x, topY + hh, s.x, s.y + hh, s.x - hw, s.y]).fill({ color: darker(base, 0.6) });
           g.poly([s.x, topY + hh, s.x + hw, topY, s.x + hw, s.y, s.x, s.y + hh]).fill({ color: darker(base, 0.45) });
@@ -257,11 +227,33 @@ export class GameRenderer {
     return c;
   }
 
-  private makePlayerSprite(custom: Customization): Container {
-    const cv = avatarCanvas(custom, 0.85);
-    const sp = new Sprite(Texture.from(cv));
-    sp.anchor.set(0.5, 1 - (4 * 0.85) / cv.height);
-    return sp;
+  private makeStructure(type: string): Container {
+    const g = new Graphics();
+    const col = ITEMS[type]?.color ?? 0x888888;
+    if (type === 'crafting_table') {
+      g.ellipse(0, -2, 15, 7).fill({ color: 0x000000, alpha: 0.2 });
+      g.rect(-12, -15, 3, 15).fill({ color: 0x5a3a1e });
+      g.rect(9, -15, 3, 15).fill({ color: 0x5a3a1e });
+      g.roundRect(-14, -21, 28, 8, 2).fill({ color: 0x8a5a2b });
+      g.roundRect(-14, -21, 28, 3, 2).fill({ color: 0xa06a34 });
+      g.rect(-7, -25, 8, 4).fill({ color: 0x9aa0ab });
+      g.rect(3, -24, 4, 3).fill({ color: 0xc0392b });
+    } else {
+      const hw = (TILE_W / 2) * 0.72, hh = (TILE_H / 2) * 0.72, H = 20;
+      g.ellipse(0, 2, hw, 6).fill({ color: 0x000000, alpha: 0.18 });
+      g.poly([-hw, -H, 0, -H + hh, 0, hh, -hw, 0]).fill({ color: darker(col, 0.6) });
+      g.poly([hw, -H, 0, -H + hh, 0, hh, hw, 0]).fill({ color: darker(col, 0.42) });
+      g.poly([0, -H - hh, hw, -H, 0, -H + hh, -hw, -H]).fill({ color: col });
+    }
+    return g;
+  }
+
+  private makeBoat(): Container {
+    const g = new Graphics();
+    g.ellipse(0, 6, 22, 7).fill({ color: 0x000000, alpha: 0.18 });
+    g.poly([-20, 0, 20, 0, 13, 9, -13, 9]).fill({ color: 0x8a5a2b });
+    g.poly([-20, 0, 20, 0, 16, -3, -16, -3]).fill({ color: 0xa06a34 });
+    return g;
   }
 
   private makeAnimal(type: AnimalType): Container {
@@ -314,162 +306,124 @@ export class GameRenderer {
   }
 
   private update(dtMs: number): void {
-    if (!this.app || !this.player) {
-      this.drawDarkness();
-      return;
-    }
+    if (!this.app || !this.player) { this.drawDarkness(); return; }
     const dt = dtMs / 1000;
     const k = Math.min(1, dt * 20);
 
     const ps = gridToScreen(this.prx, this.pry);
     const py = ps.y - elevAt(this.prx, this.pry, this.seed) * MAX_ELEV_PX;
-    this.player.x = ps.x;
-    this.player.y = py;
-    this.player.zIndex = depthOf(this.prx, this.pry) + 0.3;
+    this.player.x = ps.x; this.player.y = py; this.player.zIndex = depthOf(this.prx, this.pry) + 0.3;
     this.world.x = this.app.screen.width / 2 - ps.x;
     this.world.y = this.app.screen.height / 2 - py;
 
-    const ptx = Math.round(this.prx);
-    const pty = Math.round(this.pry);
-    const tk = ptx + ',' + pty;
-    if (tk !== this.ptile) {
-      this.ptile = tk;
-      this.refreshWindow(ptx, pty);
+    // animación
+    const spd = Math.hypot(this.prx - this.lastPrx, this.pry - this.lastPry) / dt;
+    this.lastPrx = this.prx; this.lastPry = this.pry;
+    const moving = spd > 0.35;
+    let action: AvatarAction = 'idle';
+    if (this.active && this.target) action = 'swing';
+    else if (moving && this.onWater) action = 'swim';
+    else if (moving && spd > PLAYER_SPEED * 1.2) action = 'run';
+    else if (moving) action = 'walk';
+    this.animT = (this.animT + dt * ANIM_RATE[action]) % 1;
+    const fr = this.frames[action];
+    if (fr && fr.length) this.player.texture = fr[Math.floor(this.animT * fr.length) % fr.length];
+
+    // barca
+    if (this.boat) {
+      this.boat.visible = this.onWater && this.hasBoat;
+      if (this.boat.visible) { this.boat.x = ps.x; this.boat.y = py + 2; this.boat.zIndex = depthOf(this.prx, this.pry) + 0.28; }
     }
+
+    const ptx = Math.round(this.prx), pty = Math.round(this.pry), tk = ptx + ',' + pty;
+    if (tk !== this.ptile) { this.ptile = tk; this.refreshWindow(ptx, pty); }
 
     for (const ra of this.animals.values()) {
-      ra.rx += (ra.tx - ra.rx) * k;
-      ra.ry += (ra.ty - ra.ry) * k;
+      ra.rx += (ra.tx - ra.rx) * k; ra.ry += (ra.ty - ra.ry) * k;
       const s = gridToScreen(ra.rx, ra.ry);
-      ra.sprite.x = s.x;
-      ra.sprite.y = s.y - elevAt(ra.rx, ra.ry, this.seed) * MAX_ELEV_PX;
-      ra.sprite.zIndex = depthOf(ra.rx, ra.ry) + 0.1;
+      ra.sprite.x = s.x; ra.sprite.y = s.y - elevAt(ra.rx, ra.ry, this.seed) * MAX_ELEV_PX; ra.sprite.zIndex = depthOf(ra.rx, ra.ry) + 0.1;
     }
-
-    for (const rn of this.nodes.values()) {
-      if (rn.pulse > 0) {
-        rn.pulse = Math.max(0, rn.pulse - dt * 6);
-        rn.sprite.scale.set(1 + 0.16 * rn.pulse);
-      }
-    }
-
+    for (const rn of this.nodes.values()) if (rn.pulse > 0) { rn.pulse = Math.max(0, rn.pulse - dt * 6); rn.sprite.scale.set(1 + 0.16 * rn.pulse); }
     for (let i = this.floats.length - 1; i >= 0; i--) {
-      const f = this.floats[i];
-      f.life += dt;
-      f.text.y -= dt * 26;
-      f.text.alpha = Math.max(0, 1 - f.life / 1.0);
-      if (f.life >= 1.0) {
-        this.entities.removeChild(f.text);
-        f.text.destroy();
-        this.floats.splice(i, 1);
-      }
+      const f = this.floats[i]; f.life += dt; f.text.y -= dt * 26; f.text.alpha = Math.max(0, 1 - f.life);
+      if (f.life >= 1) { this.entities.removeChild(f.text); f.text.destroy(); this.floats.splice(i, 1); }
     }
 
     this.computeTarget();
     this.drawDarkness();
   }
 
-  // Selección de tile teniendo en cuenta la elevación (rombo elevado bajo el cursor).
   private pickTile(wx: number, wy: number): { x: number; y: number } {
     const g0 = screenToGrid(wx, wy);
-    const bx = Math.round(g0.x);
-    const by = Math.round(g0.y);
-    const hw = TILE_W / 2;
-    const hh = TILE_H / 2;
-    const K = Math.ceil(MAX_ELEV_PX / hh) + 1;
-    let best: { x: number; y: number } | null = null;
-    let bestDepth = -Infinity;
-    for (let ox = -1; ox <= K; ox++) {
-      for (let oy = -1; oy <= K; oy++) {
-        const tx = bx + ox;
-        const ty = by + oy;
-        const lift = tileAt(tx, ty, this.seed).elevation * MAX_ELEV_PX;
-        const s = gridToScreen(tx, ty);
-        const cyv = s.y - lift;
-        if (Math.abs(wx - s.x) / hw + Math.abs(wy - cyv) / hh <= 1) {
-          const depth = tx + ty;
-          if (depth > bestDepth) {
-            bestDepth = depth;
-            best = { x: tx, y: ty };
-          }
-        }
-      }
+    const bx = Math.round(g0.x), by = Math.round(g0.y);
+    const hw = TILE_W / 2, hh = TILE_H / 2, K = Math.ceil(MAX_ELEV_PX / hh) + 1;
+    let best: { x: number; y: number } | null = null, bestDepth = -Infinity;
+    for (let ox = -1; ox <= K; ox++) for (let oy = -1; oy <= K; oy++) {
+      const tx = bx + ox, ty = by + oy;
+      const lift = tileAt(tx, ty, this.seed).elevation * MAX_ELEV_PX;
+      const s = gridToScreen(tx, ty), cyv = s.y - lift;
+      if (Math.abs(wx - s.x) / hw + Math.abs(wy - cyv) / hh <= 1 && tx + ty > bestDepth) { bestDepth = tx + ty; best = { x: tx, y: ty }; }
     }
     return best ?? { x: bx, y: by };
   }
 
   private computeTarget(): void {
+    const placing = this.selected?.kind === 'place';
+    this.ghost.clear();
     let next: InteractTarget = null;
+    this.placeTile = null;
+
     if (this.mouseX >= 0) {
-      const wx = this.mouseX - this.world.x;
-      const wy = this.mouseY - this.world.y;
-      let bestD = 24;
-      for (const [id, ra] of this.animals) {
-        const d = Math.hypot(ra.sprite.x - wx, ra.sprite.y - 8 - wy);
-        if (d < bestD && Math.hypot(ra.rx - this.prx, ra.ry - this.pry) <= INTERACT_RANGE) {
-          bestD = d;
-          next = { kind: 'animal', id };
-        }
-      }
-      if (!next) {
+      const wx = this.mouseX - this.world.x, wy = this.mouseY - this.world.y;
+      if (placing) {
         const t = this.pickTile(wx, wy);
-        const key = t.x + ',' + t.y;
-        if (!this.depleted.has(key) && nodeAt(t.x, t.y, this.seed) && Math.hypot(t.x - this.prx, t.y - this.pry) <= INTERACT_RANGE) {
-          next = { kind: 'node', x: t.x, y: t.y };
+        this.placeTile = t;
+        const valid = !isWater(tileAt(t.x, t.y, this.seed).terrain) && !playerBlocked(tileAt(t.x, t.y, this.seed).terrain) && Math.hypot(t.x - this.prx, t.y - this.pry) <= 4.5;
+        const s = gridToScreen(t.x, t.y), yy = s.y - tileAt(t.x, t.y, this.seed).elevation * MAX_ELEV_PX;
+        const hw = TILE_W / 2, hh = TILE_H / 2;
+        this.ghost.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).fill({ color: valid ? 0x8bd17c : 0xe06666, alpha: 0.35 }).stroke({ width: 2, color: valid ? 0x8bd17c : 0xe06666, alpha: 0.9 });
+        this.app.canvas.style.cursor = 'cell';
+      } else {
+        let bestD = 24;
+        for (const [id, ra] of this.animals) {
+          const d = Math.hypot(ra.sprite.x - wx, ra.sprite.y - 8 - wy);
+          if (d < bestD && Math.hypot(ra.rx - this.prx, ra.ry - this.pry) <= INTERACT_RANGE) { bestD = d; next = { kind: 'animal', id }; }
         }
+        if (!next) {
+          const t = this.pickTile(wx, wy), key = t.x + ',' + t.y;
+          if (!this.depleted.has(key) && nodeAt(t.x, t.y, this.seed) && Math.hypot(t.x - this.prx, t.y - this.pry) <= INTERACT_RANGE) next = { kind: 'node', x: t.x, y: t.y };
+        }
+        this.app.canvas.style.cursor = next ? 'pointer' : 'default';
       }
     }
     this.target = next;
-    this.app.canvas.style.cursor = next ? 'pointer' : 'default';
 
     this.highlight.clear();
     if (next) {
-      let hx = 0;
-      let hy = 0;
-      let hl = 0;
-      if (next.kind === 'node') {
-        hx = next.x;
-        hy = next.y;
-        hl = tileAt(next.x, next.y, this.seed).elevation * MAX_ELEV_PX;
-      } else {
-        const ra = this.animals.get(next.id);
-        if (ra) {
-          hx = ra.rx;
-          hy = ra.ry;
-          hl = elevAt(ra.rx, ra.ry, this.seed) * MAX_ELEV_PX;
-        }
-      }
-      const s = gridToScreen(hx, hy);
-      const hw = TILE_W / 2;
-      const hh = TILE_H / 2;
-      const yy = s.y - hl;
-      this.highlight
-        .poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy])
-        .stroke({ width: 2, color: next.kind === 'animal' ? 0xff6b6b : 0xf5c96b, alpha: 0.95 });
+      let hx = 0, hy = 0, hl = 0;
+      if (next.kind === 'node') { hx = next.x; hy = next.y; hl = tileAt(next.x, next.y, this.seed).elevation * MAX_ELEV_PX; }
+      else { const ra = this.animals.get(next.id); if (ra) { hx = ra.rx; hy = ra.ry; hl = elevAt(ra.rx, ra.ry, this.seed) * MAX_ELEV_PX; } }
+      const s = gridToScreen(hx, hy), hw = TILE_W / 2, hh = TILE_H / 2, yy = s.y - hl;
+      this.highlight.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).stroke({ width: 2, color: next.kind === 'animal' ? 0xff6b6b : 0xf5c96b, alpha: 0.95 });
     }
 
-    const key = next ? (next.kind === 'node' ? 'n' + next.x + ',' + next.y : 'a' + next.id) : '-';
+    const key = placing ? 'p' : next ? (next.kind === 'node' ? 'n' + next.x + ',' + next.y : 'a' + next.id) : '-';
     if (key !== this.lastSentKey) {
       this.lastSentKey = key;
-      this.app.canvas.setAttribute('data-target', next ? next.kind : 'none');
-      this.emitInteract();
+      this.app.canvas.setAttribute('data-target', placing ? 'place' : next ? next.kind : 'none');
+      if (!placing) this.emitInteract();
     }
   }
 
-  private emitInteract(): void {
-    this.onInteract(this.active, this.target);
-  }
+  private emitInteract(): void { this.onInteract(this.active, this.target); }
 
   private drawDarkness(): void {
     const d = this.nightAlpha(this.tod);
-    const g = this.darkness;
-    g.clear();
-    if (d > 0.001) g.rect(0, 0, this.app.screen.width, this.app.screen.height).fill({ color: 0x0a1230, alpha: d });
+    this.darkness.clear();
+    if (d > 0.001) this.darkness.rect(0, 0, this.app.screen.width, this.app.screen.height).fill({ color: 0x0a1230, alpha: d });
   }
-
   private nightAlpha(tod: number): number {
-    const dist = Math.abs(tod - 0.5) * 2;
-    const x = Math.min(1, Math.max(0, (dist - 0.35) / 0.4));
+    const dist = Math.abs(tod - 0.5) * 2, x = Math.min(1, Math.max(0, (dist - 0.35) / 0.4));
     return NIGHT_MAX_DARK * (x * x * (3 - 2 * x));
   }
 }

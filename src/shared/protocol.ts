@@ -1,5 +1,4 @@
 // Contrato de mensajes cliente <-> simulación (mismo protocolo servirá para MP).
-// Mundo infinito determinista: no se envían tiles, ambos lados los generan.
 
 import type { AnimalType } from './items';
 
@@ -11,6 +10,13 @@ export interface AnimalSnap {
   alive: boolean;
 }
 
+export interface Structure {
+  id: number;
+  type: string; // id de ítem colocable (crafting_table, wood_block, ...)
+  x: number;
+  y: number;
+}
+
 export interface Stats {
   health: number;
   food: number;
@@ -20,7 +26,7 @@ export interface Stats {
 
 export interface TimeInfo {
   day: number;
-  tod: number; // 0..1
+  tod: number;
 }
 
 export interface InvEntry {
@@ -32,6 +38,7 @@ export interface Snapshot {
   tick: number;
   px: number;
   py: number;
+  onWater: boolean;
   animals: AnimalSnap[];
   stats: Stats;
   time: TimeInfo;
@@ -50,7 +57,6 @@ export type InteractTarget =
   | { kind: 'animal'; id: number }
   | null;
 
-// Estado serializable para guardar/continuar.
 export interface SaveState {
   version: number;
   seed: number;
@@ -61,6 +67,7 @@ export interface SaveState {
   inventory: InvEntry[];
   harvested: [string, number][];
   depleted: string[];
+  structures: Structure[];
 }
 
 // Cliente -> Simulación
@@ -68,15 +75,19 @@ export type ClientMsg =
   | { t: 'init'; mode: 'new' | 'continue'; save?: SaveState }
   | { t: 'input'; input: InputState }
   | { t: 'interact'; active: boolean; target: InteractTarget }
+  | { t: 'selectTool'; item: string | null }
+  | { t: 'craft'; id: string }
+  | { t: 'place'; item: string; x: number; y: number }
   | { t: 'consume'; item: string }
   | { t: 'drink' }
   | { t: 'requestSave' };
 
 // Simulación -> Cliente
 export type SimMsg =
-  | { t: 'ready'; seed: number; inventory: InvEntry[]; stats: Stats }
+  | { t: 'ready'; seed: number; inventory: InvEntry[]; stats: Stats; structures: Structure[] }
   | { t: 'snapshot'; snap: Snapshot }
   | { t: 'harvest'; x: number; y: number; depleted: boolean }
   | { t: 'inventory'; inventory: InvEntry[] }
+  | { t: 'structures'; structures: Structure[] }
   | { t: 'floater'; text: string; color: number; x: number; y: number }
   | { t: 'save'; state: SaveState };
