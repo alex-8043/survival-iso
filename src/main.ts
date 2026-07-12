@@ -14,8 +14,9 @@ import { initPause, togglePause, isPaused, isCapturing } from './client/pausemen
 import { initMinimap, updateMinimap, toggleBigMap } from './client/minimap';
 import { initVillageDialog, openVillageDialog, updateVillageDialog, isVillageOpen, closeVillageDialog } from './client/villagedialog';
 import { loadBinds, actionFor } from './client/keybinds';
-import { loadGame, saveGame } from './client/save';
+import { loadGame, saveGame, saveGameSync } from './client/save';
 import { startMusic, toggleMusic, isMusicOn } from './client/music';
+import { initSfx, gameSfx } from './client/sfx';
 import { AUTOSAVE_S } from './shared/constants';
 import { ITEMS } from './shared/items';
 import { slotCounts, countIn, type Slot } from './shared/inventory';
@@ -63,6 +64,7 @@ async function main(): Promise<void> {
 
 function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Customization, save: SaveState | null): void {
   startMusic();
+  initSfx();
   initHud();
   initControls();
   setPanelCustom(custom);
@@ -70,6 +72,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   let lastSlots: Slot[] = save?.inv ?? [];
   let lastStats: Stats = save?.stats ?? { health: 100, food: 100, thirst: 100, stamina: 100 };
   let acceptedQuests: number[] = save?.acceptedQuests ?? [];
+  let latestSave: SaveState | null = save;
   let manualSave = false;
   let pendingMenu = false;
 
@@ -104,11 +107,11 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
         initMinimap(m.seed);
         lastStats = m.stats;
         refreshInv(m.inv, true);
+        worker.postMessage({ t: 'requestSave' }); // cachea un estado inicial pronto
         break;
       case 'snapshot':
         renderer.setLayer(m.snap.loc, m.snap.caveSeed);
         renderer.applySnapshot(m.snap);
-        renderer.setEntranceHint(m.snap.onEntrance);
         updateMinimap(m.snap.px, m.snap.py, m.snap.loc, m.snap.caveSeed);
         lastStats = m.snap.stats;
         if (m.snap.tick % 6 === 0) updateHud(m.snap.stats, m.snap.time);
@@ -130,10 +133,20 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
       case 'structures':
         renderer.setStructures(m.structures);
         break;
+      case 'terrain':
+        renderer.applyTerrain(m.edits, m.fluids);
+        break;
       case 'floater':
         renderer.spawnFloat(m.text, m.color, m.x, m.y);
         break;
+      case 'sfx': {
+        const gain = Math.max(0, 1 - Math.hypot(m.x - renderer.prx, m.y - renderer.pry) / 16);
+        if (gain > 0.02) gameSfx(m.sound, gain);
+        break;
+      }
       case 'save':
+        latestSave = m.state;
+        saveGameSync(m.state, custom); // durable de inmediato (localStorage)
         void saveGame(m.state, custom).then(() => {
           if (manualSave) { manualSave = false; toast('Partida guardada'); }
           if (pendingMenu) window.location.reload();
@@ -203,7 +216,6 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
       case 'craft': toggleCraft(); break;
       case 'map': toggleBigMap(); break;
       case 'jump': renderer.jump(); break;
-      case 'cave': worker.postMessage({ t: 'toggleCave' }); break;
       case 'drink': worker.postMessage({ t: 'drink' }); break;
       case 'save': requestSave(); break;
       case 'music': toggleMusic(); break;
@@ -219,7 +231,12 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   }
 
   window.setInterval(() => worker.postMessage({ t: 'requestSave' }), AUTOSAVE_S * 1000);
-  window.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') worker.postMessage({ t: 'requestSave' }); });
+  // Vuelca el último estado cacheado de forma SÍNCRONA al ocultar/cerrar la
+  // pestaña (IndexedDB no llegaría a completar su escritura asíncrona).
+  const flushSave = (): void => { if (latestSave) saveGameSync(latestSave, custom); };
+  window.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { flushSave(); worker.postMessage({ t: 'requestSave' }); } });
+  window.addEventListener('pagehide', flushSave);
+  window.addEventListener('beforeunload', flushSave);
 }
 
 main().catch((err) => showError(String(err && err.stack ? err.stack : err)));

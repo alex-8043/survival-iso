@@ -15,6 +15,7 @@ function rowsHtml(): string {
     ['Abrir mesa / cofre · Subir a barca', 'Clic sobre ella'],
     ['Hablar / comerciar con aldeano', 'Clic sobre él'],
     ['Dormir (cama)', 'Clic sobre la cama'],
+    ['Entrar / salir de cueva', 'Camina sobre la entrada'],
     ['Seleccionar objeto', '1 – 9'],
     ['Zoom', 'Rueda del ratón'],
     ['Mover cámara (paneo)', 'Clic rueda + arrastrar'],

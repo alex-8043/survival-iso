@@ -2,16 +2,15 @@
 // y correr (Shift) son fijos; el resto de acciones son reasignables.
 
 export type Action =
-  | 'inventory' | 'craft' | 'map' | 'jump' | 'cave' | 'drink' | 'save' | 'music' | 'controls' | 'pause';
+  | 'inventory' | 'craft' | 'map' | 'jump' | 'drink' | 'save' | 'music' | 'controls' | 'pause';
 
-export const ACTIONS: Action[] = ['inventory', 'craft', 'map', 'jump', 'cave', 'drink', 'save', 'music', 'controls', 'pause'];
+export const ACTIONS: Action[] = ['inventory', 'craft', 'map', 'jump', 'drink', 'save', 'music', 'controls', 'pause'];
 
 export const ACTION_LABELS: Record<Action, string> = {
   inventory: 'Inventario',
   craft: 'Crafteo básico',
   map: 'Mapa grande',
   jump: 'Saltar',
-  cave: 'Entrar / salir de cueva',
   drink: 'Beber agua',
   save: 'Guardar partida',
   music: 'Música',
@@ -24,7 +23,6 @@ const DEFAULTS: Record<Action, string> = {
   craft: 'Tab',
   map: 'KeyM',
   jump: 'Space',
-  cave: 'KeyR',
   drink: 'KeyG',
   save: 'KeyK',
   music: 'KeyN',

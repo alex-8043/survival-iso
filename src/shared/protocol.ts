@@ -63,8 +63,12 @@ export interface InputState {
 
 export type InteractTarget =
   | { kind: 'node'; x: number; y: number }
+  | { kind: 'block'; x: number; y: number }
   | { kind: 'animal'; id: number }
   | null;
+
+export interface TerrainEdit { x: number; y: number; lvl: number; top: string; }
+export interface FluidEdit { x: number; y: number; add: boolean; }
 
 export interface SaveState {
   version: number;
@@ -85,6 +89,8 @@ export interface SaveState {
   caveEntrance?: { x: number; y: number };
   riding?: boolean;
   acceptedQuests?: number[];
+  edits?: [string, { lvl: number; top: string }][]; // ediciones de terreno
+  fluids?: [string, number][]; // celdas de fluido dinámico (1=agua)
 }
 
 // Cliente -> Simulación
@@ -121,4 +127,6 @@ export type SimMsg =
   | { t: 'chest'; id: number; items: Slot[] }
   | { t: 'structures'; structures: Structure[] }
   | { t: 'floater'; text: string; color: number; x: number; y: number }
+  | { t: 'sfx'; sound: string; x: number; y: number }
+  | { t: 'terrain'; edits: TerrainEdit[]; fluids: FluidEdit[] }
   | { t: 'save'; state: SaveState };

@@ -24,8 +24,9 @@ import {
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN } from '../shared/worldgen';
+import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN, MAX_BLOCK, BEDROCK_LEVEL, WATER_SURFACE, terrainTopMaterial, materialItem, subsurfaceMaterial } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
+import type { TerrainEdit, FluidEdit } from '../shared/protocol';
 import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor } from '../shared/items';
 import type { AnimalType } from '../shared/items';
 import { recipeById } from '../shared/recipes';
@@ -68,12 +69,27 @@ export interface Sim {
   caveEntrance: { x: number; y: number } | null;
   riding: boolean;
   acceptedQuests: number[];
+  caveCooldown: number;
+  wasOnEntrance: boolean;
+  edits: Map<string, { lvl: number; top: string }>; // ediciones de terreno (superficie)
+  fluids: Map<string, number>; // celdas de fluido dinámico (1=agua)
+  floodQueue: { x: number; y: number }[]; // frente de expansión de fluido pendiente
 }
 
 export interface StepResult {
   floaters: Floater[];
   harvestEvents: { x: number; y: number; depleted: boolean }[];
   inventoryChanged: boolean;
+  sfx: { sound: string; x: number; y: number }[];
+  edits: TerrainEdit[];
+  fluids: FluidEdit[];
+}
+
+// Material de sonido para un nodo minado.
+function nodeSfxMaterial(kind: NodeKind): string {
+  if (kind === 'tree') return 'wood';
+  if (kind === 'iron' || kind === 'gold' || kind === 'diamond') return 'ore';
+  return 'stone';
 }
 
 const keyOf = (x: number, y: number) => x + ',' + y;
@@ -111,6 +127,8 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
     location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null, riding: false,
     acceptedQuests: [],
+    caveCooldown: 0, wasOnEntrance: false,
+    edits: new Map(), fluids: new Map(), floodQueue: [],
   };
 }
 
@@ -141,6 +159,8 @@ export function createSimFromSave(save: SaveState): Sim {
   sim.caveEntrance = save.caveEntrance ?? null;
   sim.riding = save.riding ?? false;
   sim.acceptedQuests = save.acceptedQuests ? [...save.acceptedQuests] : [];
+  if (save.edits) for (const [k, v] of save.edits) sim.edits.set(k, { lvl: v.lvl, top: v.top });
+  if (save.fluids) for (const [k, v] of save.fluids) sim.fluids.set(k, v);
   if (sim.location === 'surface') for (let i = 0; i < 4; i++) trySpawnAnimal(sim);
   return sim;
 }
@@ -159,6 +179,8 @@ export function serializeSim(sim: Sim): SaveState {
     caveEntrance: sim.caveEntrance ?? undefined,
     riding: sim.riding,
     acceptedQuests: [...sim.acceptedQuests],
+    edits: [...sim.edits.entries()].map(([k, v]) => [k, { lvl: v.lvl, top: v.top }] as [string, { lvl: number; top: string }]),
+    fluids: [...sim.fluids.entries()],
   };
 }
 
@@ -183,7 +205,7 @@ function invCount(sim: Sim, id: string): number { return countIn(sim.inv, id); }
 // Añade ítems: herramientas/colocables prefieren la hotbar; el resto, el inventario principal.
 function addItem(sim: Sim, item: string, n: number): void {
   const d = ITEMS[item];
-  const preferHotbar = !!(d && (d.tool || d.boat || d.place));
+  const preferHotbar = !!(d && (d.tool || d.boat || (d.place && d.place !== 'terrain')));
   if (preferHotbar) { n = addTo(sim.inv, item, n, INV_MAIN, INV_SIZE); if (n > 0) addTo(sim.inv, item, n, 0, INV_MAIN); }
   else { n = addTo(sim.inv, item, n, 0, INV_MAIN); if (n > 0) addTo(sim.inv, item, n, INV_MAIN, INV_SIZE); }
 }
@@ -192,18 +214,29 @@ function structureAt(sim: Sim, x: number, y: number): Structure | undefined {
   return sim.structures.find((s) => s.x === x && s.y === y);
 }
 
+// Nivel efectivo (con ediciones de terreno) de una tile de superficie.
+function effLevel(sim: Sim, x: number, y: number): number {
+  const e = sim.edits.get(keyOf(x, y));
+  return e ? e.lvl : tileAt(x, y, sim.seed).level;
+}
+// ¿Hay agua o fluido dinámico en la tile de superficie?
+function effWater(sim: Sim, x: number, y: number): boolean {
+  if (sim.fluids.has(keyOf(x, y))) return true;
+  if (sim.edits.has(keyOf(x, y))) return false; // editada a tierra
+  return tileAt(x, y, sim.seed).water;
+}
+
 function blockedAt(sim: Sim, x: number, y: number): boolean {
   const tx = Math.round(x);
   const ty = Math.round(y);
   if (sim.location === 'cave') return !caveTile(tx, ty, sim.caveSeed).passable; // muro/lava/agua
-  if (springAt(tx, ty, sim.seed)) return true; // no se camina sobre el manantial
+  if (springAt(tx, ty, sim.seed) && !sim.edits.has(keyOf(tx, ty))) return true; // manantial (si no se ha excavado)
   const s = structureAt(sim, tx, ty);
   if (s && ITEMS[s.type]?.solid) return true;
-  const c = tileAt(tx, ty, sim.seed);
-  if (c.water) return false; // se puede nadar
+  if (effWater(sim, tx, ty)) return false; // se puede nadar
   // Colisión por altura: sólo se sube 1 bloque (salto de 1 m).
-  const pl = levelAt(Math.round(Position.x[sim.playerId]), Math.round(Position.y[sim.playerId]), sim.seed);
-  return c.level - pl >= 2;
+  const pl = effLevel(sim, Math.round(Position.x[sim.playerId]), Math.round(Position.y[sim.playerId]));
+  return effLevel(sim, tx, ty) - pl >= 2;
 }
 
 function layerCount(sim: Sim, layer: Location): number {
@@ -256,11 +289,11 @@ export function isBlocked(sim: Sim, x: number, y: number): boolean { return bloc
 
 export function onWaterOf(sim: Sim): boolean {
   if (sim.location === 'cave') return false;
-  return isWater(tileAt(Math.round(Position.x[sim.playerId]), Math.round(Position.y[sim.playerId]), sim.seed).terrain);
+  return effWater(sim, Math.round(Position.x[sim.playerId]), Math.round(Position.y[sim.playerId]));
 }
 
 export function stepSim(sim: Sim, dt: number): StepResult {
-  const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false };
+  const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [] };
   const eid = sim.playerId;
   sim.timeS += dt;
 
@@ -274,7 +307,7 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   const sprinting = inp.sprint && moving && sim.stats.stamina > 1;
   let px = Position.x[eid];
   let py = Position.y[eid];
-  const onWater = sim.location !== 'cave' && isWater(tileAt(Math.round(px), Math.round(py), sim.seed).terrain);
+  const onWater = sim.location !== 'cave' && effWater(sim, Math.round(px), Math.round(py));
   const waterFactor = onWater ? (sim.riding ? BOAT_MULT : WATER_SLOW) : 1;
   const speed = PLAYER_SPEED * (sprinting ? SPRINT_MULT : 1) * waterFactor;
   const len = Math.hypot(gx, gy) || 1;
@@ -288,11 +321,23 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   Position.y[eid] = py;
 
   // Bajarse de la barca al llegar a tierra (devuelve la barca al inventario).
-  if (sim.riding && !(sim.location !== 'cave' && isWater(tileAt(Math.round(px), Math.round(py), sim.seed).terrain))) {
+  if (sim.riding && !(sim.location !== 'cave' && effWater(sim, Math.round(px), Math.round(py)))) {
     sim.riding = false;
     addItem(sim, 'boat', 1);
     res.inventoryChanged = true;
     res.floaters.push({ text: 'Te bajas de la barca', color: 0x9edb8a, x: px, y: py });
+  }
+
+  // Entrar/salir de cueva caminando: disparo por flanco (al pisar la entrada
+  // desde fuera) con enfriamiento para no rebotar al aparecer sobre la salida.
+  if (sim.caveCooldown > 0) sim.caveCooldown -= dt;
+  const onEnt = onEntranceOf(sim);
+  if (onEnt && !sim.wasOnEntrance && sim.caveCooldown <= 0 && !sim.riding) {
+    toggleCave(sim, res);
+    sim.caveCooldown = 1.0;
+    sim.wasOnEntrance = true;
+  } else {
+    sim.wasOnEntrance = onEnt;
   }
 
   const lowEnergy = sim.stats.food < STAMINA_LOW || sim.stats.thirst < STAMINA_LOW;
@@ -320,6 +365,17 @@ export function stepSim(sim: Sim, dt: number): StepResult {
     if (sim.spawnTimer <= 0) { sim.spawnTimer = ANIMAL_SPAWN_S; despawnFar(sim); trySpawnAnimal(sim); }
   }
 
+  if (sim.location !== 'cave') stepFluids(sim, res);
+
+  // Sonido ambiente ocasional de un animal cercano.
+  if (sim.tick % 80 === 0 && sim.animals.length) {
+    const cand = sim.animals.filter((a) => a.alive && a.layer === sim.location);
+    if (cand.length && hash2(sim.tick, 9, sim.seed) < 0.55) {
+      const a = cand[Math.floor(hash2(sim.tick, 1, sim.seed) * cand.length) % cand.length];
+      res.sfx.push({ sound: 'animal:' + a.type + ':idle', x: a.x, y: a.y });
+    }
+  }
+
   sim.tick++;
   return res;
 }
@@ -342,6 +398,7 @@ export function toggleCave(sim: Sim, res: StepResult): void {
     sim.animals = sim.animals.filter((a) => a.layer === 'surface');
     sim.caveMobTimer = 2;
     sim.interactActive = false; sim.interactTarget = null; sim.harvestTimer = 0;
+    res.sfx.push({ sound: 'ui:cave', x: 0, y: 0 });
     res.floaters.push({ text: 'Entras a la cueva', color: 0xd8c48a, x: 0, y: 0 });
   } else {
     if (Math.hypot(px, py) > 1.4) {
@@ -354,6 +411,7 @@ export function toggleCave(sim: Sim, res: StepResult): void {
     Position.y[sim.playerId] = back.y;
     sim.animals = sim.animals.filter((a) => a.layer === 'surface');
     sim.interactActive = false; sim.interactTarget = null; sim.harvestTimer = 0;
+    res.sfx.push({ sound: 'ui:cave', x: back.x, y: back.y });
     res.floaters.push({ text: 'Sales a la superficie', color: 0x9edb8a, x: back.x, y: back.y });
   }
 }
@@ -391,8 +449,24 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
     const depleted = amt <= 0;
     if (depleted) sim.depleted.add(k);
     res.harvestEvents.push({ x: tgt.x, y: tgt.y, depleted });
+    const mat = nodeSfxMaterial(kind);
+    res.sfx.push({ sound: (depleted ? 'break:' : 'hit:') + mat, x: tgt.x, y: tgt.y });
     const fast = tool && ((kind === 'tree' && tool.kind === 'axe') || (kind !== 'tree' && tool.kind === 'pickaxe'));
     return fast ? HARVEST_COOLDOWN / tool!.speed : HARVEST_COOLDOWN;
+  }
+
+  if (tgt.kind === 'block') {
+    const r = dig(sim, tgt.x, tgt.y);
+    if (r.floater) res.floaters.push(r.floater);
+    if (r.sfx) res.sfx.push({ sound: r.sfx, x: tgt.x, y: tgt.y });
+    if (r.ok && r.edit) {
+      res.edits.push(r.edit);
+      res.inventoryChanged = true;
+      const tool = toolFor(sim.activeTool);
+      const fast = r.item === 'stone' && tool && tool.kind === 'pickaxe';
+      return fast ? HARVEST_COOLDOWN / tool!.speed : HARVEST_COOLDOWN;
+    }
+    return r.floater ? HARVEST_COOLDOWN * 2 : 0;
   }
 
   const an = sim.animals.find((a) => a.id === tgt.id && a.alive);
@@ -406,6 +480,7 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
   an.wait = 0.8;
   if (an.health <= 0) {
     an.alive = false;
+    res.sfx.push({ sound: 'animal:' + an.type + ':death', x: an.x, y: an.y });
     for (const drop of ANIMAL_DROPS[an.type]) {
       const span = drop.max - drop.min + 1;
       const n = drop.min + Math.floor(hash2(an.id, drop.min, sim.seed) * span);
@@ -413,6 +488,7 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
     }
     res.inventoryChanged = true;
   } else {
+    res.sfx.push({ sound: 'animal:' + an.type + ':hurt', x: an.x, y: an.y });
     res.floaters.push({ text: '!', color: 0xff5555, x: an.x, y: an.y });
   }
   return HARVEST_COOLDOWN;
@@ -472,9 +548,10 @@ export function craft(sim: Sim, id: string): { ok: boolean; floater?: Floater } 
   return { ok: true };
 }
 
-export function place(sim: Sim, item: string, x: number, y: number): { ok: boolean; floater?: Floater } {
+export function place(sim: Sim, item: string, x: number, y: number): { ok: boolean; floater?: Floater; edit?: TerrainEdit; fluidCleared?: boolean } {
   const def = ITEMS[item];
   if (!def || !def.place || invCount(sim, item) <= 0) return { ok: false };
+  if (def.place === 'terrain') return placeTerrain(sim, item, x, y);
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
   if (sim.location === 'cave') return { ok: false, floater: { text: 'No puedes construir en la cueva', color: 0xff8a8a, x: px, y: py } };
@@ -501,6 +578,84 @@ export function board(sim: Sim, id: number): { floater?: Floater } {
   Position.x[sim.playerId] = s.x;
   Position.y[sim.playerId] = s.y;
   return { floater: { text: 'Subes a la barca', color: 0x9edb8a, x: s.x, y: s.y } };
+}
+
+// --- Excavar / rellenar terreno + fluidos (expansión limitada) ---
+const NB4 = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const;
+const FLUID_CAP = 900; // límite de celdas de fluido dinámico (acota la expansión)
+
+function isNaturalWater(sim: Sim, x: number, y: number): boolean {
+  return !sim.edits.has(keyOf(x, y)) && tileAt(x, y, sim.seed).water;
+}
+
+// Excava el bloque superior de una tile (baja su nivel 1) y suelta el material.
+export function dig(sim: Sim, x: number, y: number): { ok: boolean; floater?: Floater; sfx?: string; edit?: TerrainEdit; item?: string } {
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (sim.location === 'cave') return { ok: false };
+  if (Math.hypot(x - px, y - py) > INTERACT_RANGE) return { ok: false };
+  if (effWater(sim, x, y)) return { ok: false }; // no se excava el agua
+  if (structureAt(sim, x, y)) return { ok: false };
+  const cur = effLevel(sim, x, y);
+  if (cur <= BEDROCK_LEVEL) return { ok: false, floater: { text: 'Roca madre', color: 0xff8a8a, x, y } };
+  const base = tileAt(x, y, sim.seed);
+  const e = sim.edits.get(keyOf(x, y));
+  const topMat = e ? e.top : terrainTopMaterial(base.terrain);
+  const item = materialItem(topMat);
+  if (item === 'stone') {
+    const tool = toolFor(sim.activeTool);
+    if (!(tool && tool.kind === 'pickaxe')) return { ok: false, floater: { text: 'Necesitas un pico', color: 0xff8a8a, x, y }, sfx: 'hit:stone' };
+  }
+  const newLvl = cur - 1;
+  const newTop = subsurfaceMaterial(base.terrain, base.level - newLvl);
+  sim.edits.set(keyOf(x, y), { lvl: newLvl, top: newTop });
+  addItem(sim, item, 1);
+  if (newLvl <= WATER_SURFACE) { // ¿queda al nivel del agua junto a un fluido? -> inunda
+    for (const [ox, oy] of NB4) if (effWater(sim, x + ox, y + oy)) { sim.floodQueue.push({ x, y }); break; }
+  }
+  return { ok: true, sfx: 'break:' + item, edit: { x, y, lvl: newLvl, top: newTop }, item };
+}
+
+// Coloca un bloque de terreno (sube el nivel 1) con el material dado.
+export function placeTerrain(sim: Sim, item: string, x: number, y: number): { ok: boolean; floater?: Floater; edit?: TerrainEdit; fluidCleared?: boolean } {
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (sim.location === 'cave') return { ok: false, floater: { text: 'No puedes construir en la cueva', color: 0xff8a8a, x: px, y: py } };
+  if (Math.hypot(x - px, y - py) > 4.5) return { ok: false };
+  if (invCount(sim, item) <= 0) return { ok: false };
+  if (structureAt(sim, x, y)) return { ok: false };
+  if (Math.round(px) === x && Math.round(py) === y) return { ok: false }; // no bajo tus pies
+  const wasFluid = sim.fluids.has(keyOf(x, y));
+  const cur = (wasFluid || isNaturalWater(sim, x, y)) ? WATER_SURFACE : effLevel(sim, x, y);
+  if (cur >= MAX_BLOCK) return { ok: false, floater: { text: 'Demasiado alto', color: 0xff8a8a, x, y } };
+  const newLvl = cur + 1;
+  sim.edits.set(keyOf(x, y), { lvl: newLvl, top: item });
+  takeFrom(sim.inv, item, 1);
+  let fluidCleared = false;
+  if (wasFluid) { sim.fluids.delete(keyOf(x, y)); fluidCleared = true; }
+  return { ok: true, edit: { x, y, lvl: newLvl, top: item }, fluidCleared };
+}
+
+// Autómata de fluidos: procesa unas pocas celdas del frente por tick.
+function stepFluids(sim: Sim, res: StepResult): void {
+  let budget = 6;
+  while (budget-- > 0 && sim.floodQueue.length) {
+    if (sim.fluids.size >= FLUID_CAP) { sim.floodQueue.length = 0; break; }
+    const cell = sim.floodQueue.shift()!;
+    const { x, y } = cell;
+    const key = keyOf(x, y);
+    if (sim.fluids.has(key) || isNaturalWater(sim, x, y)) continue;
+    if (effLevel(sim, x, y) > WATER_SURFACE) continue;
+    let hasWaterNb = false;
+    for (const [ox, oy] of NB4) if (effWater(sim, x + ox, y + oy)) { hasWaterNb = true; break; }
+    if (!hasWaterNb) continue;
+    sim.fluids.set(key, 1);
+    res.fluids.push({ x, y, add: true });
+    for (const [ox, oy] of NB4) {
+      const nx = x + ox, ny = y + oy;
+      if (!sim.fluids.has(keyOf(nx, ny)) && !isNaturalWater(sim, nx, ny) && effLevel(sim, nx, ny) <= WATER_SURFACE) {
+        sim.floodQueue.push({ x: nx, y: ny });
+      }
+    }
+  }
 }
 
 // Dormir: de noche adelanta el tiempo hasta el amanecer.

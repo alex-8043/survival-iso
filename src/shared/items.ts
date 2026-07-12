@@ -29,7 +29,7 @@ export interface ItemDef {
   color: number;
   food?: number;
   tool?: { kind: ToolKind; tier: number; speed: number }; // speed = mult. de recolección
-  place?: 'block' | 'station' | 'container' | 'boat' | 'bed'; // colocable
+  place?: 'block' | 'station' | 'container' | 'boat' | 'bed' | 'terrain'; // colocable
   solid?: boolean; // el bloque bloquea el paso
   boat?: boolean;
   defense?: number;
@@ -37,7 +37,10 @@ export interface ItemDef {
 
 export const ITEMS: Record<string, ItemDef> = {
   wood: { id: 'wood', name: 'Madera', color: 0x9c6b3f },
-  stone: { id: 'stone', name: 'Piedra', color: 0x9aa0ab },
+  stone: { id: 'stone', name: 'Piedra', color: 0x9aa0ab, place: 'terrain' },
+  dirt: { id: 'dirt', name: 'Tierra', color: 0x7a5433, place: 'terrain' },
+  sand: { id: 'sand', name: 'Arena', color: 0xd9c48a, place: 'terrain' },
+  snow: { id: 'snow', name: 'Nieve', color: 0xe9edf2, place: 'terrain' },
   meat: { id: 'meat', name: 'Carne cruda', color: 0xd05a4a, food: 12 },
   cooked_meat: { id: 'cooked_meat', name: 'Carne cocinada', color: 0x9a5a2f, food: 40 },
   leather: { id: 'leather', name: 'Cuero', color: 0x7a5433 },

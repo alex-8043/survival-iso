@@ -4,12 +4,11 @@
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
 import { TILE_W, TILE_H, MAX_ELEV_PX, BLOCK_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
-import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, villageCenterAt, villageLayoutAt, VILLAGE_SCAN, type CaveTile } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, villageCenterAt, villageLayoutAt, VILLAGE_SCAN, BEDROCK_LEVEL, type CaveTile } from '../shared/worldgen';
 import { villagerId } from '../shared/trades';
 import { avatarCanvas, type AvatarAction, type Customization, type HeldTool } from './avatar';
 import { ITEMS } from '../shared/items';
-import { getCode, keyLabel } from './keybinds';
-import type { InteractTarget, Snapshot, Structure, Location } from '../shared/protocol';
+import type { InteractTarget, Snapshot, Structure, Location, TerrainEdit, FluidEdit } from '../shared/protocol';
 import type { AnimalType } from '../shared/items';
 import type { HotbarSel } from './hotbar';
 
@@ -19,6 +18,10 @@ const TERRAIN_COLORS: Record<number, number> = {
   [TERRAIN.MOUNTAIN]: 0x7c746b, [TERRAIN.SNOW]: 0xe9edf2,
   [TERRAIN.DESERT]: 0xe3cf8a, [TERRAIN.JUNGLE]: 0x2f7d3a, [TERRAIN.SWAMP]: 0x5e6f42,
   [TERRAIN.SWAMP_WATER]: 0x3c4a34,
+};
+// Colores de materiales para bloques editados (excavados/colocados).
+const MATERIAL_COLORS: Record<string, number> = {
+  dirt: 0x7a5433, sand: 0xd9c48a, stone: 0x8f8b7c, snow: 0xe9edf2, grass: 0x5a9e4f,
 };
 const ANIM_FRAMES: Record<AvatarAction, number> = { idle: 1, walk: 6, run: 6, swing: 6, swim: 6 };
 const ANIM_RATE: Record<AvatarAction, number> = { idle: 0.5, walk: 1.5, run: 2.6, swing: 2.2, swim: 1.3 };
@@ -76,6 +79,12 @@ export class GameRenderer {
 
   loc: Location = 'surface';
   caveSeed = 0;
+  layerEverSet = false;
+
+  // Ediciones de terreno y fluidos dinámicos (sincronizados desde el sim).
+  readonly edits = new Map<string, { lvl: number; top: string }>();
+  readonly fluids = new Map<string, number>();
+  terrainDirty = false;
   caveDark: Sprite | null = null;
   vigW = 0; vigH = 0;
 
@@ -175,6 +184,8 @@ export class GameRenderer {
     this.custom = custom;
     this.held = null; this.heldKey = '';
     this.loc = 'surface';
+    this.layerEverSet = false;
+    this.edits.clear(); this.fluids.clear(); this.terrainDirty = false;
     this.prx = this.lastPrx = px;
     this.pry = this.lastPry = py;
     this.buildFrames();
@@ -223,13 +234,29 @@ export class GameRenderer {
 
   // Cambia de capa (superficie <-> cueva) y reconstruye el mundo visible.
   setLayer(loc: Location, caveSeed: number): void {
-    if (loc === this.loc && caveSeed === this.caveSeed) return;
+    if (this.layerEverSet && loc === this.loc && caveSeed === this.caveSeed) return;
+    const first = !this.layerEverSet;
+    this.layerEverSet = true;
     this.loc = loc;
     this.caveSeed = caveSeed;
     for (const [key, rn] of this.nodes) { this.entities.removeChild(rn.sprite); rn.sprite.destroy(); this.nodes.delete(key); }
     for (const [key, sp] of this.decor) { this.entities.removeChild(sp); sp.destroy(); this.decor.delete(key); }
     for (const sp of this.structs.values()) sp.visible = loc === 'surface';
     this.ptile = '';
+    if (!first) this.showTransition();
+  }
+
+  // Fundido a negro tipo "cargando" al entrar/salir de la cueva.
+  private showTransition(): void {
+    let el = document.getElementById('cave-fade');
+    if (!el) { el = document.createElement('div'); el.id = 'cave-fade'; document.body.appendChild(el); }
+    const e = el;
+    e.style.transition = 'none';
+    e.style.opacity = '1';
+    e.style.display = 'block';
+    void e.offsetWidth; // fuerza reflow
+    requestAnimationFrame(() => { e.style.transition = 'opacity .55s ease'; e.style.opacity = '0'; });
+    window.setTimeout(() => { e.style.display = 'none'; }, 750);
   }
 
   jump(): void {
@@ -242,7 +269,25 @@ export class GameRenderer {
   private elevAtL(x: number, y: number): number {
     const rx = Math.round(x), ry = Math.round(y);
     if (this.loc === 'cave') return caveTile(rx, ry, this.caveSeed).elevation;
-    return (tileAt(rx, ry, this.seed).level * BLOCK_PX) / MAX_ELEV_PX;
+    if (this.effWaterAt(rx, ry)) return 0; // superficie del agua (nivel del mar)
+    return (this.effLevelAt(rx, ry) * BLOCK_PX) / MAX_ELEV_PX;
+  }
+  // Nivel/agua efectivos con ediciones de terreno (superficie).
+  private effLevelAt(x: number, y: number): number {
+    const e = this.edits.get(x + ',' + y);
+    return e ? e.lvl : tileAt(x, y, this.seed).level;
+  }
+  private effWaterAt(x: number, y: number): boolean {
+    const k = x + ',' + y;
+    if (this.fluids.has(k)) return true;
+    if (this.edits.has(k)) return false;
+    return tileAt(x, y, this.seed).water;
+  }
+  // Aplica un lote de ediciones/fluidos recibido del sim.
+  applyTerrain(edits: TerrainEdit[], fluids: FluidEdit[]): void {
+    for (const e of edits) this.edits.set(e.x + ',' + e.y, { lvl: e.lvl, top: e.top });
+    for (const f of fluids) { const k = f.x + ',' + f.y; if (f.add) this.fluids.set(k, 1); else this.fluids.delete(k); }
+    this.terrainDirty = true;
   }
   private nodeKindAtL(x: number, y: number): string | null {
     return this.loc === 'cave' ? caveNodeAt(x, y, this.caveSeed) : nodeAt(x, y, this.seed);
@@ -380,6 +425,30 @@ export class GameRenderer {
     sprite.zIndex = depthOf(x, y) + depthBias;
   }
 
+  // Reajusta la altura de nodos/decoración de superficie tras editar el terreno.
+  private realignSurface(): void {
+    if (this.loc !== 'surface') return;
+    for (const [key, rn] of this.nodes) {
+      const c = key.split(','); const x = +c[0], y = +c[1];
+      const s = gridToScreen(x, y); rn.sprite.y = s.y - this.elevAtL(x, y) * MAX_ELEV_PX;
+    }
+    for (const [key, sp] of this.decor) {
+      const c = key.slice(1).split(','); const x = +c[0], y = +c[1];
+      const s = gridToScreen(x, y); sp.y = s.y - this.elevAtL(x, y) * MAX_ELEV_PX;
+    }
+  }
+
+  // ¿Se puede excavar esta tile de superficie?
+  private canDig(x: number, y: number): boolean {
+    if (this.loc !== 'surface') return false;
+    if (this.effWaterAt(x, y)) return false;
+    if (this.structTiles.has(x + ',' + y)) return false;
+    if (this.effLevelAt(x, y) <= BEDROCK_LEVEL) return false;
+    if (caveEntranceAt(x, y, this.seed) && !this.edits.has(x + ',' + y)) return false;
+    if (x === Math.round(this.prx) && y === Math.round(this.pry)) return false;
+    return true;
+  }
+
   private makeDecor(kind: string): Container {
     const c = new Graphics();
     if (kind === 'stalagmite') {
@@ -471,18 +540,23 @@ export class GameRenderer {
           if (ck === 'lava') g.poly([s.x, topY - hh * 0.5, s.x + hw * 0.5, topY, s.x, topY + hh * 0.5, s.x - hw * 0.5, topY]).fill({ color: 0xff9b3a, alpha: 0.85 });
           if (ck === 'water') g.poly([s.x, topY - hh * 0.55, s.x + hw * 0.55, topY, s.x, topY + hh * 0.55, s.x - hw * 0.55, topY]).fill({ color: 0x4f95c8, alpha: 0.7 });
         } else {
+          const key = x + ',' + y;
+          const edit = this.edits.get(key);
+          const isFluid = this.fluids.has(key);
           const info = tileAt(x, y, this.seed);
-          if (info.water) {
-            const col = TERRAIN_COLORS[info.terrain] ?? 0x3a79a6;
-            const swamp = info.terrain === TERRAIN.SWAMP_WATER;
+          const water = isFluid || (!edit && info.water);
+          if (water) {
+            const swamp = !isFluid && info.terrain === TERRAIN.SWAMP_WATER;
+            const col = isFluid ? 0x3a79a6 : (TERRAIN_COLORS[info.terrain] ?? 0x3a79a6);
             g.poly([s.x, s.y - hh, s.x + hw, s.y, s.x, s.y + hh, s.x - hw, s.y]).fill({ color: col });
             g.poly([s.x, s.y - hh * 0.5, s.x + hw * 0.5, s.y, s.x, s.y + hh * 0.5, s.x - hw * 0.5, s.y]).fill({ color: swamp ? 0x556b3a : 0x4f93c4, alpha: swamp ? 0.4 : 0.5 });
           } else {
-            const lvl = info.level;
-            const base = TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f;
+            const lvl = edit ? edit.lvl : info.level;
+            const base = edit ? (MATERIAL_COLORS[edit.top] ?? TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f) : (TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f);
             const topY = s.y - lvl * BLOCK_PX;
-            const rN = tileAt(x + 1, y, this.seed), lN = tileAt(x, y + 1, this.seed);
-            const rDrop = lvl - (rN.water ? 0 : rN.level), lDrop = lvl - (lN.water ? 0 : lN.level);
+            const rLvl = this.effWaterAt(x + 1, y) ? 0 : this.effLevelAt(x + 1, y);
+            const lLvl = this.effWaterAt(x, y + 1) ? 0 : this.effLevelAt(x, y + 1);
+            const rDrop = lvl - rLvl, lDrop = lvl - lLvl;
             if (rDrop > 0) {
               const fh = rDrop * BLOCK_PX;
               g.poly([s.x + hw, topY, s.x, topY + hh, s.x, topY + hh + fh, s.x + hw, topY + fh]).fill({ color: darker(base, 0.52) });
@@ -496,8 +570,8 @@ export class GameRenderer {
               for (let i = 1; i < n; i++) { const yy = topY + i * BLOCK_PX; g.moveTo(s.x - hw, yy); g.lineTo(s.x, yy + hh); g.stroke({ width: 1, color: 0x000000, alpha: 0.13 }); }
             }
             g.poly([s.x, topY - hh, s.x + hw, topY, s.x, topY + hh, s.x - hw, topY]).fill({ color: base });
-            if (caveEntranceAt(x, y, this.seed)) this.drawEntrance(g, s.x, topY);
-            else if (springAt(x, y, this.seed)) this.drawSpring(g, s.x, topY);
+            if (!edit && caveEntranceAt(x, y, this.seed)) this.drawEntrance(g, s.x, topY);
+            else if (!edit && springAt(x, y, this.seed)) this.drawSpring(g, s.x, topY);
           }
         }
       }
@@ -505,11 +579,20 @@ export class GameRenderer {
   }
 
   private drawEntrance(g: Graphics, cx: number, topY: number): void {
-    const my = topY + 3;
-    g.roundRect(cx - 9, my - 15, 18, 17, 7).fill({ color: 0x1b1512 });
-    g.ellipse(cx, my - 4, 7, 8).fill({ color: 0x05050a });
-    g.ellipse(cx, my, 10, 5).fill({ color: 0x07070c });
-    g.ellipse(cx, my - 1, 13, 8).stroke({ width: 2, color: 0xe8c06a, alpha: 0.5 });
+    const my = topY - 1;
+    // montículo rocoso con rocas alrededor
+    g.ellipse(cx, my + 3, 18, 9).fill({ color: 0x574f47 });
+    g.ellipse(cx - 3, my - 8, 14, 12).fill({ color: 0x746c62 });
+    g.ellipse(cx + 8, my - 3, 8, 8).fill({ color: 0x655d54 });
+    g.ellipse(cx - 10, my - 1, 6, 6).fill({ color: 0x6b6259 });
+    g.ellipse(cx + 2, my - 13, 7, 6).fill({ color: 0x7d746a });
+    // boca de la cueva: arco oscuro (semielipse + base)
+    g.ellipse(cx, my - 2, 9, 8).fill({ color: 0x17120f });
+    g.rect(cx - 9, my - 2, 18, 6).fill({ color: 0x17120f });
+    g.ellipse(cx, my - 2, 6.5, 6).fill({ color: 0x060409 });
+    g.rect(cx - 6.5, my - 2, 13, 6).fill({ color: 0x060409 });
+    // brillo tenue del borde
+    g.ellipse(cx, my - 2, 9, 8).stroke({ width: 1.4, color: 0xa89a82, alpha: 0.35 });
   }
 
   private drawSpring(g: Graphics, cx: number, topY: number): void {
@@ -889,6 +972,8 @@ export class GameRenderer {
 
     const ptx = Math.round(this.prx), pty = Math.round(this.pry), tk = ptx + ',' + pty;
     if (tk !== this.ptile) { this.ptile = tk; this.refreshWindow(ptx, pty); }
+    else if (this.terrainDirty) this.refreshWindow(ptx, pty);
+    if (this.terrainDirty) { this.terrainDirty = false; this.realignSurface(); }
 
     for (const ra of this.animals.values()) {
       ra.rx += (ra.tx - ra.rx) * k; ra.ry += (ra.ty - ra.ry) * k;
@@ -935,10 +1020,12 @@ export class GameRenderer {
       if (placing) {
         const t = this.pickTile(wx, wy);
         this.placeTile = t;
-        const water = isWater(tileAt(t.x, t.y, this.seed).terrain);
-        const isBoat = this.selected?.item === 'boat';
-        const valid = (isBoat ? water : !water) && Math.hypot(t.x - this.prx, t.y - this.pry) <= 4.5;
-        const s = gridToScreen(t.x, t.y), yy = s.y - tileAt(t.x, t.y, this.seed).elevation * MAX_ELEV_PX;
+        const item = this.selected?.item;
+        const isTerrain = item ? ITEMS[item]?.place === 'terrain' : false;
+        const isBoat = item === 'boat';
+        const water = this.effWaterAt(t.x, t.y);
+        const valid = Math.hypot(t.x - this.prx, t.y - this.pry) <= 4.5 && (isTerrain ? true : isBoat ? water : !water);
+        const s = gridToScreen(t.x, t.y), yy = s.y - this.elevAtL(t.x, t.y) * MAX_ELEV_PX;
         const hw = TILE_W / 2, hh = TILE_H / 2;
         this.ghost.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).fill({ color: valid ? 0x8bd17c : 0xe06666, alpha: 0.35 }).stroke({ width: 2, color: valid ? 0x8bd17c : 0xe06666, alpha: 0.9 });
         this.app.canvas.style.cursor = 'cell';
@@ -971,6 +1058,7 @@ export class GameRenderer {
           if (!next) {
             const key = this.nodeKey(pick.x, pick.y);
             if (!this.depleted.has(key) && this.nodeKindAtL(pick.x, pick.y) && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) next = { kind: 'node', x: pick.x, y: pick.y };
+            else if (this.canDig(pick.x, pick.y) && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) next = { kind: 'block', x: pick.x, y: pick.y };
           }
           this.app.canvas.style.cursor = next ? 'pointer' : 'default';
         }
@@ -981,10 +1069,11 @@ export class GameRenderer {
     this.highlight.clear();
     if (next) {
       let hx = 0, hy = 0, hl = 0;
-      if (next.kind === 'node') { hx = next.x; hy = next.y; hl = this.elevAtL(next.x, next.y) * MAX_ELEV_PX; }
+      if (next.kind === 'node' || next.kind === 'block') { hx = next.x; hy = next.y; hl = this.elevAtL(next.x, next.y) * MAX_ELEV_PX; }
       else { const ra = this.animals.get(next.id); if (ra) { hx = ra.rx; hy = ra.ry; hl = this.elevAtL(ra.rx, ra.ry) * MAX_ELEV_PX; } }
       const s = gridToScreen(hx, hy), hw = TILE_W / 2, hh = TILE_H / 2, yy = s.y - hl;
-      this.highlight.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).stroke({ width: 2, color: next.kind === 'animal' ? 0xff6b6b : 0xf5c96b, alpha: 0.95 });
+      const hc = next.kind === 'animal' ? 0xff6b6b : next.kind === 'block' ? 0xe8e8e8 : 0xf5c96b;
+      this.highlight.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).stroke({ width: 2, color: hc, alpha: 0.95 });
     }
     if (this.structTarget) {
       const st = this.structTarget;
@@ -997,7 +1086,7 @@ export class GameRenderer {
       this.highlight.poly([sp.x, yy - hh, sp.x + hw, yy, sp.x, yy + hh, sp.x - hw, yy]).stroke({ width: 2, color: this.talkTarget ? 0xffd05a : 0x8bd1ff, alpha: 0.95 });
     }
 
-    const key = placing ? 'p' : this.talkTarget ? 't' + this.talkTarget.id : this.sleepTarget ? 'z' + this.sleepTarget.x + ',' + this.sleepTarget.y : this.structTarget ? 's' + this.structTarget.x + ',' + this.structTarget.y : next ? (next.kind === 'node' ? 'n' + next.x + ',' + next.y : 'a' + next.id) : '-';
+    const key = placing ? 'p' : this.talkTarget ? 't' + this.talkTarget.id : this.sleepTarget ? 'z' + this.sleepTarget.x + ',' + this.sleepTarget.y : this.structTarget ? 's' + this.structTarget.x + ',' + this.structTarget.y : next ? (next.kind === 'animal' ? 'a' + next.id : (next.kind === 'block' ? 'k' : 'n') + next.x + ',' + next.y) : '-';
     if (key !== this.lastSentKey) {
       this.lastSentKey = key;
       this.app.canvas.setAttribute('data-target', placing ? 'place' : this.structTarget ? (this.structTarget.type === 'chest' ? 'chest' : 'station') : next ? next.kind : 'none');
@@ -1044,13 +1133,4 @@ export class GameRenderer {
     this.caveDark.x = 0; this.caveDark.y = 0;
   }
 
-  // Aviso "Pulsa E" cuando el jugador está sobre una entrada / salida.
-  setEntranceHint(on: boolean): void {
-    let el = document.getElementById('cave-hint');
-    if (!on) { if (el) el.style.display = 'none'; return; }
-    if (!el) { el = document.createElement('div'); el.id = 'cave-hint'; document.body.appendChild(el); }
-    const k = keyLabel(getCode('cave'));
-    el.textContent = this.loc === 'cave' ? `Pulsa ${k} para salir de la cueva` : `Pulsa ${k} para entrar a la cueva`;
-    el.style.display = 'block';
-  }
 }

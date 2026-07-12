@@ -21,8 +21,8 @@ export const VIEW_TILES = 30; // radio de render alrededor del jugador (tiles)
 export const WATER_SLOW = 0.4; // multiplicador de velocidad nadando (sin barca)
 export const BOAT_MULT = 0.95; // con barca: casi como en tierra (ya no más rápido)
 
-export const SAVE_VERSION = 2;
-export const AUTOSAVE_S = 20; // autoguardado cada N segundos
+export const SAVE_VERSION = 3; // 3: añade ediciones de terreno y fluidos
+export const AUTOSAVE_S = 8; // autoguardado cada N segundos (además del volcado al cerrar)
 
 // Ciclo día/noche
 export const DAY_LENGTH_S = 1200; // 20 min por ciclo completo (~10 día + ~10 noche)

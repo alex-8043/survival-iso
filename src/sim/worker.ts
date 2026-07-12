@@ -28,6 +28,12 @@ function postChest(id: number): void {
 function postQuests(): void {
   if (sim) post({ t: 'quests', ids: [...sim.acceptedQuests] });
 }
+function postTerrainAll(): void {
+  if (!sim) return;
+  const edits = [...sim.edits.entries()].map(([k, v]) => { const [x, y] = k.split(',').map(Number); return { x, y, lvl: v.lvl, top: v.top }; });
+  const fluids = [...sim.fluids.keys()].map((k) => { const [x, y] = k.split(',').map(Number); return { x, y, add: true }; });
+  if (edits.length || fluids.length) post({ t: 'terrain', edits, fluids });
+}
 
 function startLoop(): void {
   if (loop !== null) return;
@@ -45,6 +51,8 @@ function startLoop(): void {
     for (const h of r.harvestEvents) post({ t: 'harvest', x: h.x, y: h.y, depleted: h.depleted });
     if (r.inventoryChanged) postInv();
     for (const f of r.floaters) post({ t: 'floater', text: f.text, color: f.color, x: f.x, y: f.y });
+    for (const s of r.sfx) post({ t: 'sfx', sound: s.sound, x: s.x, y: s.y });
+    if (r.edits.length || r.fluids.length) post({ t: 'terrain', edits: r.edits, fluids: r.fluids });
   }, TICK_MS);
 }
 
@@ -54,6 +62,7 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     sim = m.mode === 'continue' && m.save ? createSimFromSave(m.save) : createSim(WORLD_SEED);
     post({ t: 'ready', seed: sim.seed, inv: invSlots(sim), stats: sim.stats, structures: sim.structures, loc: sim.location, caveSeed: sim.caveSeed });
     postQuests();
+    postTerrainAll();
     startLoop();
     return;
   }
@@ -67,7 +76,15 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     if (r.floater) post({ t: 'floater', ...r.floater });
   } else if (m.t === 'place') {
     const r = place(sim, m.item, m.x, m.y);
-    if (r.ok) { post({ t: 'structures', structures: sim.structures }); postInv(); }
+    if (r.ok) {
+      if (r.edit) {
+        post({ t: 'terrain', edits: [r.edit], fluids: r.fluidCleared ? [{ x: r.edit.x, y: r.edit.y, add: false }] : [] });
+        post({ t: 'sfx', sound: 'ui:place', x: r.edit.x, y: r.edit.y });
+      } else {
+        post({ t: 'structures', structures: sim.structures });
+      }
+      postInv();
+    }
     if (r.floater) post({ t: 'floater', ...r.floater });
   } else if (m.t === 'consume') {
     const item = m.item ?? bestFood(sim);
@@ -96,9 +113,10 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
   } else if (m.t === 'openChest') {
     postChest(m.id);
   } else if (m.t === 'toggleCave') {
-    const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false };
+    const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [] };
     toggleCave(sim, res);
     for (const f of res.floaters) post({ t: 'floater', ...f });
+    for (const s of res.sfx) post({ t: 'sfx', sound: s.sound, x: s.x, y: s.y });
   } else if (m.t === 'board') {
     const r = board(sim, m.id);
     post({ t: 'structures', structures: sim.structures });

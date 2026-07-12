@@ -88,6 +88,29 @@ export function levelAt(x: number, y: number, seed: number): number {
   return tileAt(x, y, seed).level;
 }
 
+// --- Edición de terreno (excavar/rellenar) ---
+export const BEDROCK_LEVEL = -6; // fondo excavable (roca madre)
+export const WATER_SURFACE = 0; // el mar/fluido se estabiliza a este nivel
+
+// Material del bloque superior sin editar (para color y desglose).
+export function terrainTopMaterial(terrain: Terrain): string {
+  if (terrain === TERRAIN.DESERT || terrain === TERRAIN.SAND) return 'sand';
+  if (terrain === TERRAIN.ROCK || terrain === TERRAIN.MOUNTAIN) return 'stone';
+  if (terrain === TERRAIN.SNOW) return 'snow';
+  if (terrain === TERRAIN.SWAMP) return 'dirt';
+  return 'grass'; // grass / forest / jungle
+}
+// Objeto que sueltas al romper un material (la hierba da tierra).
+export function materialItem(mat: string): string {
+  return mat === 'grass' ? 'dirt' : mat;
+}
+// Material expuesto tras excavar, según la profundidad bajo la superficie base.
+export function subsurfaceMaterial(terrain: Terrain, depthBelow: number): string {
+  if (terrain === TERRAIN.ROCK || terrain === TERRAIN.MOUNTAIN || terrain === TERRAIN.SNOW) return 'stone';
+  if (terrain === TERRAIN.DESERT || terrain === TERRAIN.SAND) return depthBelow <= 2 ? 'sand' : 'stone';
+  return depthBelow <= 1 ? 'dirt' : 'stone';
+}
+
 export type NodeKind = 'tree' | 'rock' | 'coal' | 'iron' | 'gold' | 'diamond';
 
 export function nodeAt(x: number, y: number, seed: number): NodeKind | null {
