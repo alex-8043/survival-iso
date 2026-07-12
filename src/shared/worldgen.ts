@@ -52,7 +52,7 @@ export function tileAt(x: number, y: number, seed: number): TileInfo {
   return { terrain, elevation, passable };
 }
 
-export type NodeKind = 'tree' | 'rock';
+export type NodeKind = 'tree' | 'rock' | 'coal' | 'iron';
 
 export function nodeAt(x: number, y: number, seed: number): NodeKind | null {
   const t = tileAt(x, y, seed);
@@ -70,4 +70,48 @@ export function isWater(terrain: Terrain): boolean {
 // El jugador puede entrar al agua (lento); solo la nieve/pico es intransitable.
 export function playerBlocked(terrain: Terrain): boolean {
   return terrain === TERRAIN.SNOW;
+}
+
+// ---------------------------------------------------------------------------
+// Cuevas: entradas en la superficie (montaña/roca) y un nivel interior propio.
+// El interior es una sala acotada, determinista a partir de la semilla de cueva.
+// ---------------------------------------------------------------------------
+
+export const CAVE_R = 11; // radio de la sala (tiles)
+
+// Hay una entrada de cueva en ciertos tiles de montaña o roca.
+export function caveEntranceAt(x: number, y: number, seed: number): boolean {
+  const t = tileAt(x, y, seed).terrain;
+  if (t !== TERRAIN.MOUNTAIN && t !== TERRAIN.ROCK) return false;
+  return hash2(x, y, (seed ^ 0x5eed) | 0) < 0.05;
+}
+
+// Semilla determinista de la cueva a partir de las coordenadas de su entrada.
+export function caveSeedFor(ex: number, ey: number, seed: number): number {
+  return (Math.imul(ex | 0, 73856093) ^ Math.imul(ey | 0, 19349663) ^ (seed | 0)) | 0;
+}
+
+export interface CaveTile { terrain: Terrain; elevation: number; passable: boolean; wall: boolean; }
+
+// Interior de cueva: suelo transitable con muros/pilares dispersos. El centro
+// (cerca de 0,0) siempre es suelo: ahí está la salida.
+export function caveTile(x: number, y: number, cseed: number): CaveTile {
+  const d = Math.max(Math.abs(x), Math.abs(y));
+  let wall = d >= CAVE_R;
+  if (!wall && d > 2) {
+    const n = fbm((x + 40) * 0.16, (y - 40) * 0.16, cseed, 3);
+    if (n > 0.63) wall = true;
+  }
+  return { terrain: wall ? 1 : 0, elevation: wall ? 0.5 : 0, passable: !wall, wall };
+}
+
+// Nodos minables dentro de la cueva: piedra, carbón y hierro.
+export function caveNodeAt(x: number, y: number, cseed: number): NodeKind | null {
+  if (!caveTile(x, y, cseed).passable) return null;
+  if (Math.abs(x) <= 1 && Math.abs(y) <= 1) return null; // salida despejada
+  const r = hash2(x, y, (cseed ^ 0x1f7) | 0);
+  if (r < 0.1) return 'iron';
+  if (r < 0.24) return 'coal';
+  if (r < 0.44) return 'rock';
+  return null;
 }

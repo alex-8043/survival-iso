@@ -90,6 +90,26 @@
       .needs { font-size: 11px; opacity: .7; margin-bottom: 6px; }
       .craft-btn { width: 100%; background: var(--gold); color: #201800; border: 0; border-radius: 7px; padding: 6px; font-weight: 700; cursor: pointer; }
       .craft-btn:disabled { background: rgba(255,255,255,.1); color: rgba(255,255,255,.4); cursor: not-allowed; }
+
+      /* Hotbar: icono de herramienta (sprite) y ranura vacía */
+      .hicon.himg { background-color: transparent; background-repeat: no-repeat; background-position: center; background-size: 30px 30px; box-shadow: none; width: 30px; height: 30px; }
+      .hslot.empty { opacity: .5; }
+
+      /* Botón de ayuda / controles */
+      #controls-btn { position: fixed; right: 12px; bottom: 14px; z-index: 26; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line); background: rgba(0,0,0,.44); color: var(--fg); font-size: 18px; font-weight: 700; cursor: pointer; line-height: 1; }
+      #controls-btn:hover { background: rgba(245,201,107,.22); border-color: var(--gold); }
+
+      /* Overlay de controles */
+      #controls { position: fixed; inset: 0; z-index: 44; display: none; align-items: center; justify-content: center; background: rgba(6,10,6,.62); }
+      .ctrl-card { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; width: min(440px, 92vw); max-height: 88vh; overflow: auto; }
+      .ctrl-card h3 { margin: 0 0 14px; }
+      .ctrl-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.06); }
+      .ctrl-row:last-child { border-bottom: 0; }
+      .ctrl-act { font-size: 13px; opacity: .9; }
+      .ctrl-key { font-size: 12px; font-weight: 700; color: var(--gold); background: rgba(245,201,107,.12); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; white-space: nowrap; }
+
+      /* Aviso de entrada/salida de cueva */
+      #cave-hint { position: fixed; left: 50%; bottom: 74px; transform: translateX(-50%); z-index: 24; display: none; background: rgba(0,0,0,.6); color: var(--gold); font: 13px system-ui, sans-serif; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); pointer-events: none; }
     </style>
   </head>
   <body>

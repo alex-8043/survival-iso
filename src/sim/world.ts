@@ -21,11 +21,12 @@ import {
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, nodeAt, isWater, playerBlocked } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt } from '../shared/worldgen';
+import type { NodeKind } from '../shared/worldgen';
 import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, ITEMS, toolFor } from '../shared/items';
 import type { AnimalType } from '../shared/items';
 import { recipeById } from '../shared/recipes';
-import type { InputState, InteractTarget, Stats, AnimalSnap, TimeInfo, InvEntry, SaveState, Structure } from '../shared/protocol';
+import type { InputState, InteractTarget, Stats, AnimalSnap, TimeInfo, InvEntry, SaveState, Structure, Location } from '../shared/protocol';
 
 export const Position = defineComponent({ x: Types.f32, y: Types.f32 });
 
@@ -54,6 +55,10 @@ export interface Sim {
   stats: Stats;
   timeS: number;
   tick: number;
+  location: Location;
+  caveSeed: number;
+  surfaceReturn: { x: number; y: number } | null;
+  caveEntrance: { x: number; y: number } | null;
 }
 
 export interface StepResult {
@@ -63,6 +68,21 @@ export interface StepResult {
 }
 
 const keyOf = (x: number, y: number) => x + ',' + y;
+
+// Nodo activo según la capa (superficie o cueva).
+function activeNodeAt(sim: Sim, x: number, y: number): NodeKind | null {
+  return sim.location === 'cave' ? caveNodeAt(x, y, sim.caveSeed) : nodeAt(x, y, sim.seed);
+}
+// Clave de recolección con prefijo de capa (evita colisiones superficie/cueva).
+function nodeKeyOf(sim: Sim, x: number, y: number): string {
+  return sim.location === 'cave' ? 'c' + sim.caveSeed + ':' + x + ',' + y : keyOf(x, y);
+}
+// ¿El jugador está sobre una entrada (superficie) o la salida (cueva)?
+export function onEntranceOf(sim: Sim): boolean {
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (sim.location === 'cave') return Math.hypot(px, py) <= 1.4; // salida en el centro
+  return caveEntranceAt(Math.round(px), Math.round(py), sim.seed);
+}
 
 function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
   const world = createWorld();
@@ -79,6 +99,7 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     animals: [], nextAnimalId: 1, spawnTimer: 0,
     inventory: {}, stats: { health: 100, food: 100, thirst: 100, stamina: 100 },
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
+    location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null,
   };
 }
 
@@ -97,6 +118,10 @@ export function createSimFromSave(save: SaveState): Sim {
   sim.depleted = new Set(save.depleted);
   sim.structures = save.structures ? save.structures.map((s) => ({ ...s })) : [];
   sim.nextStructId = sim.structures.reduce((m, s) => Math.max(m, s.id), 0) + 1;
+  sim.location = save.loc ?? 'surface';
+  sim.caveSeed = save.caveSeed ?? 0;
+  sim.surfaceReturn = save.surfaceReturn ?? null;
+  sim.caveEntrance = save.caveEntrance ?? null;
   for (let i = 0; i < 8; i++) trySpawnAnimal(sim);
   return sim;
 }
@@ -109,6 +134,9 @@ export function serializeSim(sim: Sim): SaveState {
     inventory: invEntries(sim.inventory),
     harvested: [...sim.harvested.entries()], depleted: [...sim.depleted],
     structures: sim.structures.map((s) => ({ ...s })),
+    loc: sim.location, caveSeed: sim.caveSeed,
+    surfaceReturn: sim.surfaceReturn ?? undefined,
+    caveEntrance: sim.caveEntrance ?? undefined,
   };
 }
 
@@ -121,8 +149,8 @@ function findSpawn(seed: number): { x: number; y: number } {
   return { x: 0, y: 0 };
 }
 
-function nodeAmount(sim: Sim, x: number, y: number, kind: 'tree' | 'rock'): number {
-  const k = keyOf(x, y);
+function nodeAmount(sim: Sim, x: number, y: number, kind: NodeKind): number {
+  const k = nodeKeyOf(sim, x, y);
   if (sim.depleted.has(k)) return 0;
   const stored = sim.harvested.get(k);
   return stored !== undefined ? stored : NODE_KINDS[kind].amount;
@@ -139,6 +167,7 @@ function structureAt(sim: Sim, x: number, y: number): Structure | undefined {
 function blockedAt(sim: Sim, x: number, y: number): boolean {
   const tx = Math.round(x);
   const ty = Math.round(y);
+  if (sim.location === 'cave') return caveTile(tx, ty, sim.caveSeed).wall;
   if (playerBlocked(tileAt(tx, ty, sim.seed).terrain)) return true;
   const s = structureAt(sim, tx, ty);
   return !!(s && ITEMS[s.type]?.solid);
@@ -162,6 +191,7 @@ function trySpawnAnimal(sim: Sim): void {
 }
 
 export function onWaterOf(sim: Sim): boolean {
+  if (sim.location === 'cave') return false;
   return isWater(tileAt(Math.round(Position.x[sim.playerId]), Math.round(Position.y[sim.playerId]), sim.seed).terrain);
 }
 
@@ -180,7 +210,7 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   const sprinting = inp.sprint && moving && sim.stats.stamina > 1;
   let px = Position.x[eid];
   let py = Position.y[eid];
-  const onWater = isWater(tileAt(Math.round(px), Math.round(py), sim.seed).terrain);
+  const onWater = sim.location !== 'cave' && isWater(tileAt(Math.round(px), Math.round(py), sim.seed).terrain);
   const hasBoat = (sim.inventory['boat'] || 0) > 0;
   const waterFactor = onWater ? (hasBoat ? 1.55 : WATER_SLOW) : 1;
   const speed = PLAYER_SPEED * (sprinting ? SPRINT_MULT : 1) * waterFactor;
@@ -209,24 +239,63 @@ export function stepSim(sim: Sim, dt: number): StepResult {
     } else sim.harvestTimer -= dt;
   } else sim.harvestTimer = 0;
 
-  updateAnimals(sim, dt);
-  sim.spawnTimer -= dt;
-  if (sim.spawnTimer <= 0) { sim.spawnTimer = 1.5; despawnFar(sim); trySpawnAnimal(sim); }
+  if (sim.location !== 'cave') {
+    updateAnimals(sim, dt);
+    sim.spawnTimer -= dt;
+    if (sim.spawnTimer <= 0) { sim.spawnTimer = 1.5; despawnFar(sim); trySpawnAnimal(sim); }
+  }
 
   sim.tick++;
   return res;
+}
+
+// Entra a la cueva (si estás sobre una entrada) o sale (si estás en la salida).
+export function toggleCave(sim: Sim, res: StepResult): void {
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (sim.location === 'surface') {
+    const ex = Math.round(px), ey = Math.round(py);
+    if (!caveEntranceAt(ex, ey, sim.seed)) {
+      res.floaters.push({ text: 'No hay ninguna entrada aquí', color: 0xff8a8a, x: px, y: py });
+      return;
+    }
+    sim.surfaceReturn = { x: px, y: py };
+    sim.caveEntrance = { x: ex, y: ey };
+    sim.caveSeed = caveSeedFor(ex, ey, sim.seed);
+    sim.location = 'cave';
+    Position.x[sim.playerId] = 0;
+    Position.y[sim.playerId] = 0;
+    sim.interactActive = false; sim.interactTarget = null; sim.harvestTimer = 0;
+    res.floaters.push({ text: 'Entras a la cueva', color: 0xd8c48a, x: 0, y: 0 });
+  } else {
+    if (Math.hypot(px, py) > 1.4) {
+      res.floaters.push({ text: 'Ve a la salida (centro) para salir', color: 0xff8a8a, x: px, y: py });
+      return;
+    }
+    const back = sim.surfaceReturn ?? sim.caveEntrance ?? { x: 0, y: 0 };
+    sim.location = 'surface';
+    Position.x[sim.playerId] = back.x;
+    Position.y[sim.playerId] = back.y;
+    sim.interactActive = false; sim.interactTarget = null; sim.harvestTimer = 0;
+    res.floaters.push({ text: 'Sales a la superficie', color: 0x9edb8a, x: back.x, y: back.y });
+  }
 }
 
 function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
   const tgt = sim.interactTarget!;
   if (tgt.kind === 'node') {
     if (Math.hypot(tgt.x - px, tgt.y - py) > INTERACT_RANGE) return 0;
-    const kind = nodeAt(tgt.x, tgt.y, sim.seed);
+    const kind = activeNodeAt(sim, tgt.x, tgt.y);
     if (!kind) return 0;
+    const tool = toolFor(sim.activeTool);
+    // El hierro exige pico de piedra o mejor.
+    if (kind === 'iron' && !(tool && tool.kind === 'pickaxe' && tool.tier >= 2)) {
+      res.floaters.push({ text: 'Necesitas pico de piedra', color: 0xff8a8a, x: tgt.x, y: tgt.y });
+      return HARVEST_COOLDOWN * 2;
+    }
     let amt = nodeAmount(sim, tgt.x, tgt.y, kind);
     if (amt <= 0) return 0;
     amt -= 1;
-    const k = keyOf(tgt.x, tgt.y);
+    const k = nodeKeyOf(sim, tgt.x, tgt.y);
     sim.harvested.set(k, amt);
     const item = NODE_KINDS[kind].item;
     addItem(sim, item, 1);
@@ -235,8 +304,7 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
     if (depleted) sim.depleted.add(k);
     res.harvestEvents.push({ x: tgt.x, y: tgt.y, depleted });
     res.floaters.push({ text: '+1', color: ITEMS[item].color, x: tgt.x, y: tgt.y });
-    const tool = toolFor(sim.activeTool);
-    const fast = tool && ((kind === 'tree' && tool.kind === 'axe') || (kind === 'rock' && tool.kind === 'pickaxe'));
+    const fast = tool && ((kind === 'tree' && tool.kind === 'axe') || (kind !== 'tree' && tool.kind === 'pickaxe'));
     return fast ? HARVEST_COOLDOWN / tool!.speed : HARVEST_COOLDOWN;
   }
 
@@ -319,6 +387,7 @@ export function place(sim: Sim, item: string, x: number, y: number): { ok: boole
   if (!def || !def.place || (sim.inventory[item] || 0) <= 0) return { ok: false };
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
+  if (sim.location === 'cave') return { ok: false, floater: { text: 'No puedes construir en la cueva', color: 0xff8a8a, x: px, y: py } };
   if (Math.hypot(x - px, y - py) > 4.5) return { ok: false };
   const terr = tileAt(x, y, sim.seed).terrain;
   if (isWater(terr) || playerBlocked(terr)) return { ok: false };
@@ -353,6 +422,7 @@ export function timeInfo(sim: Sim): TimeInfo {
   return { day: Math.floor(sim.timeS / DAY_LENGTH_S) + 1, tod: (sim.timeS % DAY_LENGTH_S) / DAY_LENGTH_S };
 }
 export function animalSnaps(sim: Sim): AnimalSnap[] {
+  if (sim.location === 'cave') return [];
   return sim.animals.map((a) => ({ id: a.id, type: a.type, x: a.x, y: a.y, alive: a.alive }));
 }
 export function invEntries(inv: Record<string, number>): InvEntry[] {

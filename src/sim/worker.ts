@@ -2,9 +2,9 @@
 
 import {
   createSim, createSimFromSave, serializeSim, stepSim, consume, drink, craft, place,
-  timeInfo, animalSnaps, invEntries, playerPos, onWaterOf,
+  timeInfo, animalSnaps, invEntries, playerPos, onWaterOf, toggleCave, onEntranceOf,
 } from './world';
-import type { Sim } from './world';
+import type { Sim, StepResult } from './world';
 import { WORLD_SEED, TICK_MS } from '../shared/constants';
 import type { ClientMsg, SimMsg, Snapshot } from '../shared/protocol';
 
@@ -26,6 +26,7 @@ function startLoop(): void {
     const snap: Snapshot = {
       tick: sim.tick, px: p.x, py: p.y, onWater: onWaterOf(sim),
       animals: animalSnaps(sim), stats: sim.stats, time: timeInfo(sim),
+      loc: sim.location, caveSeed: sim.caveSeed, onEntrance: onEntranceOf(sim),
     };
     post({ t: 'snapshot', snap });
     for (const h of r.harvestEvents) post({ t: 'harvest', x: h.x, y: h.y, depleted: h.depleted });
@@ -38,7 +39,7 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
   const m = e.data;
   if (m.t === 'init') {
     sim = m.mode === 'continue' && m.save ? createSimFromSave(m.save) : createSim(WORLD_SEED);
-    post({ t: 'ready', seed: sim.seed, inventory: invEntries(sim.inventory), stats: sim.stats, structures: sim.structures });
+    post({ t: 'ready', seed: sim.seed, inventory: invEntries(sim.inventory), stats: sim.stats, structures: sim.structures, loc: sim.location, caveSeed: sim.caveSeed });
     startLoop();
     return;
   }
@@ -61,5 +62,9 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     const r = consume(sim, m.item);
     if (r.ok) { post({ t: 'inventory', inventory: invEntries(sim.inventory) }); if (r.floater) post({ t: 'floater', ...r.floater }); }
   } else if (m.t === 'drink') drink(sim);
-  else if (m.t === 'requestSave') post({ t: 'save', state: serializeSim(sim) });
+  else if (m.t === 'toggleCave') {
+    const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false };
+    toggleCave(sim, res);
+    for (const f of res.floaters) post({ t: 'floater', ...f });
+  } else if (m.t === 'requestSave') post({ t: 'save', state: serializeSim(sim) });
 };

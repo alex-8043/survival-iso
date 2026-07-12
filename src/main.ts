@@ -8,6 +8,7 @@ import { showMenu } from './client/menu';
 import { togglePanel, isPanelOpen, updatePanel, setPanelCustom } from './client/panel';
 import { initHotbar, updateHotbar, type HotbarSel } from './client/hotbar';
 import { initCraft, toggleCraft, updateCraft } from './client/craftpanel';
+import { initControls } from './client/controls';
 import { loadGame, saveGame } from './client/save';
 import { startMusic, toggleMusic, isMusicOn } from './client/music';
 import { AUTOSAVE_S } from './shared/constants';
@@ -59,6 +60,7 @@ function hasBoat(inv: InvEntry[]): boolean {
 function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Customization, save: SaveState | null): void {
   startMusic();
   initHud();
+  initControls();
   setPanelCustom(custom);
 
   let lastInv: InvEntry[] = save?.inventory ?? [];
@@ -82,11 +84,14 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
       case 'ready':
         renderer.start(m.seed, custom, save?.px ?? 0, save?.py ?? 0);
         renderer.setStructures(m.structures);
+        renderer.setLayer(m.loc, m.caveSeed);
         lastStats = m.stats;
         refreshInv(m.inventory);
         break;
       case 'snapshot':
+        renderer.setLayer(m.snap.loc, m.snap.caveSeed);
         renderer.applySnapshot(m.snap);
+        renderer.setEntranceHint(m.snap.onEntrance);
         lastStats = m.snap.stats;
         if (m.snap.tick % 6 === 0) updateHud(m.snap.stats, m.snap.time);
         if (isPanelOpen()) updatePanel(lastInv, lastStats);
@@ -116,6 +121,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
 
   initHotbar((sel: HotbarSel) => {
     renderer.selected = sel;
+    renderer.setHeldFromItem(sel.kind === 'tool' ? sel.item : null);
     worker.postMessage({ t: 'selectTool', item: sel.kind === 'tool' ? sel.item : null });
   });
   initCraft((id) => worker.postMessage({ t: 'craft', id }));
@@ -126,6 +132,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
     if (e.repeat) return;
     if (e.code === 'KeyF') worker.postMessage({ t: 'consume', item: 'meat' });
     else if (e.code === 'KeyG') worker.postMessage({ t: 'drink' });
+    else if (e.code === 'KeyE') worker.postMessage({ t: 'toggleCave' });
     else if (e.code === 'KeyM') toggleMusic();
     else if (e.code === 'KeyC') { e.preventDefault(); toggleCraft(); }
     else if (e.code === 'KeyK') { manualSave = true; worker.postMessage({ t: 'requestSave' }); }

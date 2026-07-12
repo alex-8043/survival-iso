@@ -34,6 +34,8 @@ export interface InvEntry {
   count: number;
 }
 
+export type Location = 'surface' | 'cave';
+
 export interface Snapshot {
   tick: number;
   px: number;
@@ -42,6 +44,9 @@ export interface Snapshot {
   animals: AnimalSnap[];
   stats: Stats;
   time: TimeInfo;
+  loc: Location;
+  caveSeed: number;
+  onEntrance: boolean; // sobre una entrada de cueva (superficie) o salida (cueva)
 }
 
 export interface InputState {
@@ -68,6 +73,10 @@ export interface SaveState {
   harvested: [string, number][];
   depleted: string[];
   structures: Structure[];
+  loc?: Location;
+  caveSeed?: number;
+  surfaceReturn?: { x: number; y: number };
+  caveEntrance?: { x: number; y: number };
 }
 
 // Cliente -> Simulación
@@ -80,11 +89,12 @@ export type ClientMsg =
   | { t: 'place'; item: string; x: number; y: number }
   | { t: 'consume'; item: string }
   | { t: 'drink' }
+  | { t: 'toggleCave' }
   | { t: 'requestSave' };
 
 // Simulación -> Cliente
 export type SimMsg =
-  | { t: 'ready'; seed: number; inventory: InvEntry[]; stats: Stats; structures: Structure[] }
+  | { t: 'ready'; seed: number; inventory: InvEntry[]; stats: Stats; structures: Structure[]; loc: Location; caveSeed: number }
   | { t: 'snapshot'; snap: Snapshot }
   | { t: 'harvest'; x: number; y: number; depleted: boolean }
   | { t: 'inventory'; inventory: InvEntry[] }

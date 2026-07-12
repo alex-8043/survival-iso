@@ -1,6 +1,8 @@
-// Hotbar: herramientas / colocables / barca. Teclas 1-9, rueda, o clic.
+// Hotbar de 9 ranuras fijas: mano (1) + herramientas / colocables / barca.
+// Teclas 1-9, rueda o clic. Las herramientas muestran su sprite.
 
 import { ITEMS } from '../shared/items';
+import { toolIconCanvas } from './avatar';
 import type { InvEntry } from '../shared/protocol';
 
 export interface HotbarSel {
@@ -8,17 +10,20 @@ export interface HotbarSel {
   item: string | null;
 }
 
-let slots: string[] = ['hand'];
+const SLOT_COUNT = 9;
+let slots: (string | null)[] = new Array(SLOT_COUNT).fill(null);
+slots[0] = 'hand';
 let idx = 0;
 let counts: Record<string, number> = {};
 let onSel: (s: HotbarSel) => void = () => {};
+const iconCache: Record<string, string> = {};
 
 function css(n: number): string {
   return '#' + ('000000' + n.toString(16)).slice(-6);
 }
 
-function selOf(item: string): HotbarSel {
-  if (item === 'hand') return { kind: 'hand', item: null };
+function selOf(item: string | null): HotbarSel {
+  if (!item || item === 'hand') return { kind: 'hand', item: null };
   const d = ITEMS[item];
   if (d?.tool) return { kind: 'tool', item };
   if (d?.boat) return { kind: 'boat', item };
@@ -27,7 +32,7 @@ function selOf(item: string): HotbarSel {
 }
 
 export function currentSel(): HotbarSel {
-  return selOf(slots[idx] || 'hand');
+  return selOf(slots[idx]);
 }
 
 function emit(): void {
@@ -39,7 +44,7 @@ export function initHotbar(onSelect: (s: HotbarSel) => void): void {
   window.addEventListener('keydown', (e) => {
     if (e.code.startsWith('Digit')) {
       const n = parseInt(e.code.slice(5), 10);
-      if (n >= 1 && n <= 9 && n - 1 < slots.length) {
+      if (n >= 1 && n <= SLOT_COUNT) {
         idx = n - 1;
         render();
         emit();
@@ -47,8 +52,11 @@ export function initHotbar(onSelect: (s: HotbarSel) => void): void {
     }
   });
   window.addEventListener('wheel', (e) => {
-    if (slots.length < 2) return;
-    idx = (idx + (e.deltaY > 0 ? 1 : -1) + slots.length) % slots.length;
+    // avanza a la siguiente ranura no vacía
+    for (let s = 0; s < SLOT_COUNT; s++) {
+      idx = (idx + (e.deltaY > 0 ? 1 : -1) + SLOT_COUNT) % SLOT_COUNT;
+      if (slots[idx]) break;
+    }
     render();
     emit();
   }, { passive: true });
@@ -62,12 +70,28 @@ export function updateHotbar(inv: InvEntry[]): void {
   const tools = inv.filter((e) => ITEMS[e.id]?.tool).map((e) => e.id);
   const places = inv.filter((e) => ITEMS[e.id]?.place).map((e) => e.id);
   const boats = inv.filter((e) => ITEMS[e.id]?.boat).map((e) => e.id);
+  const items = [...tools, ...places, ...boats];
   const cur = slots[idx];
-  slots = ['hand', ...tools, ...places, ...boats];
-  const ni = slots.indexOf(cur);
-  idx = ni >= 0 ? ni : Math.min(idx, slots.length - 1);
+  slots = new Array(SLOT_COUNT).fill(null);
+  slots[0] = 'hand';
+  for (let i = 0; i < items.length && i + 1 < SLOT_COUNT; i++) slots[i + 1] = items[i];
+  const ni = cur ? slots.indexOf(cur) : -1;
+  idx = ni >= 0 ? ni : Math.min(idx, SLOT_COUNT - 1);
   render();
   emit();
+}
+
+function toolIconUrl(item: string, kind: string, tier: number): string {
+  if (!iconCache[item]) iconCache[item] = toolIconCanvas(kind, tier).toDataURL();
+  return iconCache[item];
+}
+
+function iconHtml(it: string): string {
+  if (it === 'hand') return `<span class="hicon" style="background:#f2d3a8"></span>`;
+  const d = ITEMS[it];
+  if (d?.tool) return `<span class="hicon himg" style="background-image:url(${toolIconUrl(it, d.tool.kind, d.tool.tier)})"></span>`;
+  const c = d ? css(d.color) : '#888888';
+  return `<span class="hicon" style="background:${c}"></span>`;
 }
 
 function render(): void {
@@ -80,12 +104,12 @@ function render(): void {
   bar.innerHTML = slots
     .map((it, i) => {
       const sel = i === idx ? ' sel' : '';
-      const key = i + 1 <= 9 ? `<span class="hkey">${i + 1}</span>` : '';
-      if (it === 'hand') return `<div class="hslot${sel}" data-i="${i}" title="Mano">${key}<span class="hicon" style="background:#f2d3a8"></span></div>`;
+      const key = `<span class="hkey">${i + 1}</span>`;
+      if (!it) return `<div class="hslot empty${sel}" data-i="${i}">${key}</div>`;
+      if (it === 'hand') return `<div class="hslot${sel}" data-i="${i}" title="Mano">${key}${iconHtml(it)}</div>`;
       const d = ITEMS[it];
-      const c = d ? css(d.color) : '#888888';
-      const badge = d?.place ? `<span class="hcount">${counts[it] || 0}</span>` : '';
-      return `<div class="hslot${sel}" data-i="${i}" title="${d ? d.name : it}">${key}<span class="hicon" style="background:${c}"></span>${badge}</div>`;
+      const badge = d?.place || d?.boat ? `<span class="hcount">${counts[it] || 0}</span>` : '';
+      return `<div class="hslot${sel}" data-i="${i}" title="${d ? d.name : it}">${key}${iconHtml(it)}${badge}</div>`;
     })
     .join('');
   bar.querySelectorAll('.hslot').forEach((elm) =>

@@ -4,10 +4,10 @@
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
 import { TILE_W, TILE_H, MAX_ELEV_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
-import { tileAt, nodeAt, isWater, playerBlocked, TERRAIN } from '../shared/worldgen';
-import { avatarCanvas, type AvatarAction, type Customization } from './avatar';
+import { tileAt, nodeAt, isWater, playerBlocked, TERRAIN, caveTile, caveNodeAt, caveEntranceAt } from '../shared/worldgen';
+import { avatarCanvas, type AvatarAction, type Customization, type HeldTool } from './avatar';
 import { ITEMS } from '../shared/items';
-import type { InteractTarget, Snapshot, Structure } from '../shared/protocol';
+import type { InteractTarget, Snapshot, Structure, Location } from '../shared/protocol';
 import type { AnimalType } from '../shared/items';
 import type { HotbarSel } from './hotbar';
 
@@ -23,9 +23,8 @@ const PLAYER_SCALE = 0.85;
 function darker(color: number, f: number): number {
   return (Math.round(((color >> 16) & 0xff) * f) << 16) | (Math.round(((color >> 8) & 0xff) * f) << 8) | Math.round((color & 0xff) * f);
 }
-function elevAt(x: number, y: number, seed: number): number {
-  return tileAt(Math.round(x), Math.round(y), seed).elevation;
-}
+const CAVE_FLOOR = 0x3a3a47;
+const CAVE_WALL = 0x2a2a35;
 
 interface RenderNode { sprite: Container; pulse: number; }
 interface RenderAnimal { sprite: Container; rx: number; ry: number; tx: number; ty: number; }
@@ -50,9 +49,17 @@ export class GameRenderer {
   player: Sprite | null = null;
   boat: Container | null = null;
   frames: Record<string, Texture[]> = {};
+  custom: Customization | null = null;
+  held: HeldTool | null = null;
+  heldKey = '';
   animT = 0;
   prx = 0; pry = 0; lastPrx = 0; lastPry = 0;
   ptile = ''; tod = 0.35; onWater = false; hasBoat = false;
+
+  loc: Location = 'surface';
+  caveSeed = 0;
+  caveDark: Sprite | null = null;
+  vigW = 0; vigH = 0;
 
   mouseX = -1; mouseY = -1; active = false;
   target: InteractTarget = null;
@@ -73,6 +80,9 @@ export class GameRenderer {
     this.world.addChild(this.entities);
     this.app.stage.addChild(this.world);
     this.app.stage.addChild(this.darkness);
+    this.caveDark = new Sprite(Texture.EMPTY);
+    this.caveDark.visible = false;
+    this.app.stage.addChild(this.caveDark);
 
     const cv = this.app.canvas;
     cv.addEventListener('pointermove', (e) => {
@@ -96,15 +106,12 @@ export class GameRenderer {
 
   start(seed: number, custom: Customization, px = 0, py = 0): void {
     this.seed = seed;
+    this.custom = custom;
+    this.held = null; this.heldKey = '';
+    this.loc = 'surface';
     this.prx = this.lastPrx = px;
     this.pry = this.lastPry = py;
-    this.frames = {};
-    for (const action of Object.keys(ANIM_FRAMES) as AvatarAction[]) {
-      const n = ANIM_FRAMES[action];
-      const arr: Texture[] = [];
-      for (let i = 0; i < n; i++) arr.push(Texture.from(avatarCanvas(custom, PLAYER_SCALE, action, i / n)));
-      this.frames[action] = arr;
-    }
+    this.buildFrames();
     this.player = new Sprite(this.frames.idle[0]);
     this.player.anchor.set(0.5, 0.9375);
     this.entities.addChild(this.player);
@@ -114,6 +121,60 @@ export class GameRenderer {
     this.ptile = '';
     // eslint-disable-next-line no-console
     console.log('[client] mundo iniciado, seed', seed);
+  }
+
+  private destroyFrames(): void {
+    for (const arr of Object.values(this.frames)) for (const tx of arr) tx.destroy(true);
+    this.frames = {};
+  }
+
+  private buildFrames(): void {
+    if (!this.custom) return;
+    this.destroyFrames();
+    for (const action of Object.keys(ANIM_FRAMES) as AvatarAction[]) {
+      const n = ANIM_FRAMES[action];
+      const arr: Texture[] = [];
+      for (let i = 0; i < n; i++) arr.push(Texture.from(avatarCanvas(this.custom, PLAYER_SCALE, action, i / n, this.held)));
+      this.frames[action] = arr;
+    }
+    if (this.player) this.player.texture = this.frames.idle[0];
+  }
+
+  // Regenera los fotogramas del avatar con (o sin) la herramienta en la mano.
+  setHeldTool(held: HeldTool | null): void {
+    const key = held ? held.kind + held.tier : '';
+    if (key === this.heldKey) return;
+    this.heldKey = key;
+    this.held = held;
+    if (this.custom && this.player) this.buildFrames();
+  }
+
+  // A partir del id de ítem seleccionado en la hotbar.
+  setHeldFromItem(item: string | null): void {
+    const tool = item ? ITEMS[item]?.tool : undefined;
+    this.setHeldTool(tool ? { kind: tool.kind, tier: tool.tier } : null);
+  }
+
+  // Cambia de capa (superficie <-> cueva) y reconstruye el mundo visible.
+  setLayer(loc: Location, caveSeed: number): void {
+    if (loc === this.loc && caveSeed === this.caveSeed) return;
+    this.loc = loc;
+    this.caveSeed = caveSeed;
+    for (const [key, rn] of this.nodes) { this.entities.removeChild(rn.sprite); rn.sprite.destroy(); this.nodes.delete(key); }
+    for (const sp of this.structs.values()) sp.visible = loc === 'surface';
+    this.ptile = '';
+  }
+
+  // --- Consultas de mundo según la capa activa (superficie o cueva) ---
+  private elevAtL(x: number, y: number): number {
+    const rx = Math.round(x), ry = Math.round(y);
+    return this.loc === 'cave' ? caveTile(rx, ry, this.caveSeed).elevation : tileAt(rx, ry, this.seed).elevation;
+  }
+  private nodeKindAtL(x: number, y: number): string | null {
+    return this.loc === 'cave' ? caveNodeAt(x, y, this.caveSeed) : nodeAt(x, y, this.seed);
+  }
+  private nodeKey(x: number, y: number): string {
+    return this.loc === 'cave' ? 'c' + this.caveSeed + ':' + x + ',' + y : x + ',' + y;
   }
 
   applySnapshot(snap: Snapshot): void {
@@ -139,6 +200,7 @@ export class GameRenderer {
         sprite.x = p.x;
         sprite.y = p.y - tileAt(s.x, s.y, this.seed).elevation * MAX_ELEV_PX;
         sprite.zIndex = depthOf(s.x, s.y) + 0.15;
+        sprite.visible = this.loc === 'surface';
         this.entities.addChild(sprite);
         this.structs.set(s.id, sprite);
       }
@@ -147,7 +209,7 @@ export class GameRenderer {
   }
 
   onHarvest(x: number, y: number, depleted: boolean): void {
-    const key = x + ',' + y;
+    const key = this.nodeKey(x, y);
     const rn = this.nodes.get(key);
     if (rn) rn.pulse = 1;
     if (depleted) { this.depleted.add(key); if (rn) { this.entities.removeChild(rn.sprite); rn.sprite.destroy(); this.nodes.delete(key); } }
@@ -157,7 +219,7 @@ export class GameRenderer {
     const t = new Text({ text: label, style: { fill: color, fontSize: 15, fontFamily: 'system-ui, sans-serif', fontWeight: '700', stroke: { color: 0x0a0a12, width: 3 } } });
     t.anchor.set(0.5);
     const s = gridToScreen(gx, gy);
-    t.x = s.x; t.y = s.y - elevAt(gx, gy, this.seed) * MAX_ELEV_PX - 34; t.zIndex = 2_000_000;
+    t.x = s.x; t.y = s.y - this.elevAtL(gx, gy) * MAX_ELEV_PX - 34; t.zIndex = 2_000_000;
     this.entities.addChild(t);
     this.floats.push({ text: t, life: 0 });
   }
@@ -167,16 +229,18 @@ export class GameRenderer {
     const R = this.viewRadius();
     const want = new Set<string>();
     for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
-      const x = ptx + dx, y = pty + dy, key = x + ',' + y;
-      if (!this.depleted.has(key) && nodeAt(x, y, this.seed)) {
-        want.add(key);
-        if (!this.nodes.has(key)) {
-          const sprite = this.makeNode(nodeAt(x, y, this.seed)!);
-          const s = gridToScreen(x, y);
-          sprite.x = s.x; sprite.y = s.y - tileAt(x, y, this.seed).elevation * MAX_ELEV_PX; sprite.zIndex = depthOf(x, y);
-          this.entities.addChild(sprite);
-          this.nodes.set(key, { sprite, pulse: 0 });
-        }
+      const x = ptx + dx, y = pty + dy;
+      const kind = this.nodeKindAtL(x, y);
+      if (!kind) continue;
+      const key = this.nodeKey(x, y);
+      if (this.depleted.has(key)) continue;
+      want.add(key);
+      if (!this.nodes.has(key)) {
+        const sprite = this.makeNode(kind);
+        const s = gridToScreen(x, y);
+        sprite.x = s.x; sprite.y = s.y - this.elevAtL(x, y) * MAX_ELEV_PX; sprite.zIndex = depthOf(x, y);
+        this.entities.addChild(sprite);
+        this.nodes.set(key, { sprite, pulse: 0 });
       }
     }
     for (const [key, rn] of this.nodes) if (!want.has(key)) { this.entities.removeChild(rn.sprite); rn.sprite.destroy(); this.nodes.delete(key); }
@@ -193,14 +257,15 @@ export class GameRenderer {
     const hw = TILE_W / 2, hh = TILE_H / 2;
     const halfW = this.app.screen.width / 2 + TILE_W;
     const halfH = this.app.screen.height / 2 + TILE_H + MAX_ELEV_PX;
+    const cave = this.loc === 'cave';
     for (let d = -2 * R; d <= 2 * R; d++) {
       for (let dx = Math.max(-R, d - R); dx <= Math.min(R, d + R); dx++) {
         const dy = d - dx;
         const relX = (dx - dy) * hw, relY = (dx + dy) * hh;
         if (relX < -halfW || relX > halfW || relY < -halfH || relY > halfH) continue;
         const x = ptx + dx, y = pty + dy;
-        const info = tileAt(x, y, this.seed);
-        const base = TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f;
+        const info = cave ? caveTile(x, y, this.caveSeed) : tileAt(x, y, this.seed);
+        const base = cave ? (info.elevation > 0.01 ? CAVE_WALL : CAVE_FLOOR) : (TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f);
         const s = gridToScreen(x, y);
         const lift = info.elevation * MAX_ELEV_PX, topY = s.y - lift;
         if (lift > 3) {
@@ -208,8 +273,17 @@ export class GameRenderer {
           g.poly([s.x, topY + hh, s.x + hw, topY, s.x + hw, s.y, s.x, s.y + hh]).fill({ color: darker(base, 0.45) });
         }
         g.poly([s.x, topY - hh, s.x + hw, topY, s.x, topY + hh, s.x - hw, topY]).fill({ color: base });
+        if (!cave && caveEntranceAt(x, y, this.seed)) this.drawEntrance(g, s.x, topY);
       }
     }
+  }
+
+  private drawEntrance(g: Graphics, cx: number, topY: number): void {
+    const my = topY + 3;
+    g.roundRect(cx - 9, my - 15, 18, 17, 7).fill({ color: 0x1b1512 });
+    g.ellipse(cx, my - 4, 7, 8).fill({ color: 0x05050a });
+    g.ellipse(cx, my, 10, 5).fill({ color: 0x07070c });
+    g.ellipse(cx, my - 1, 13, 8).stroke({ width: 2, color: 0xe8c06a, alpha: 0.5 });
   }
 
   private makeNode(kind: string): Container {
@@ -219,6 +293,20 @@ export class GameRenderer {
       c.rect(-3, -20, 6, 20).fill({ color: 0x6b4a2b });
       c.ellipse(0, -28, 16, 18).fill({ color: 0x2f7d3a });
       c.ellipse(-6, -34, 10, 11).fill({ color: 0x3a9247 });
+    } else if (kind === 'coal') {
+      c.ellipse(0, -1, 12, 6).fill({ color: 0x000000, alpha: 0.22 });
+      c.ellipse(0, -7, 14, 10).fill({ color: 0x4a4a53 });
+      c.ellipse(-4, -10, 8, 6).fill({ color: 0x5a5a63 });
+      c.circle(2, -7, 2.6).fill({ color: 0x16161b });
+      c.circle(-5, -6, 1.8).fill({ color: 0x16161b });
+      c.circle(4, -11, 1.4).fill({ color: 0x101015 });
+    } else if (kind === 'iron') {
+      c.ellipse(0, -1, 12, 6).fill({ color: 0x000000, alpha: 0.22 });
+      c.ellipse(0, -7, 14, 10).fill({ color: 0x83888f });
+      c.ellipse(-4, -10, 8, 6).fill({ color: 0x9aa0ab });
+      c.circle(2, -7, 2.4).fill({ color: 0xc79066 });
+      c.circle(-5, -6, 1.7).fill({ color: 0xb37c4c });
+      c.circle(5, -11, 1.5).fill({ color: 0xd8a86e });
     } else {
       c.ellipse(0, -1, 12, 6).fill({ color: 0x000000, alpha: 0.22 });
       c.ellipse(0, -6, 14, 10).fill({ color: 0x7a7f8a });
@@ -238,6 +326,20 @@ export class GameRenderer {
       g.roundRect(-14, -21, 28, 3, 2).fill({ color: 0xa06a34 });
       g.rect(-7, -25, 8, 4).fill({ color: 0x9aa0ab });
       g.rect(3, -24, 4, 3).fill({ color: 0xc0392b });
+    } else if (type === 'furnace') {
+      g.ellipse(0, 2, 15, 7).fill({ color: 0x000000, alpha: 0.2 });
+      g.roundRect(-13, -26, 26, 28, 3).fill({ color: 0x5c5c66 });
+      g.roundRect(-13, -26, 26, 6, 3).fill({ color: 0x70707a });
+      g.roundRect(-8, -17, 16, 13, 2).fill({ color: 0x201d1c });
+      g.roundRect(-6, -13, 12, 8, 2).fill({ color: 0xff7a2a });
+      g.roundRect(-6, -9, 12, 4, 1).fill({ color: 0xffd05a });
+    } else if (type === 'forge') {
+      g.ellipse(0, 2, 16, 7).fill({ color: 0x000000, alpha: 0.2 });
+      g.roundRect(-7, -7, 14, 9, 1).fill({ color: 0x33333c });
+      g.roundRect(-3, -13, 6, 7, 1).fill({ color: 0x2a2a32 });
+      g.roundRect(-14, -21, 28, 9, 2).fill({ color: 0x53535e });
+      g.poly([13, -21, 21, -17.5, 13, -13.5]).fill({ color: 0x53535e });
+      g.roundRect(-14, -21, 28, 3, 2).fill({ color: 0x686872 });
     } else {
       const hw = (TILE_W / 2) * 0.72, hh = (TILE_H / 2) * 0.72, H = 20;
       g.ellipse(0, 2, hw, 6).fill({ color: 0x000000, alpha: 0.18 });
@@ -311,7 +413,7 @@ export class GameRenderer {
     const k = Math.min(1, dt * 20);
 
     const ps = gridToScreen(this.prx, this.pry);
-    const py = ps.y - elevAt(this.prx, this.pry, this.seed) * MAX_ELEV_PX;
+    const py = ps.y - this.elevAtL(this.prx, this.pry) * MAX_ELEV_PX;
     this.player.x = ps.x; this.player.y = py; this.player.zIndex = depthOf(this.prx, this.pry) + 0.3;
     this.world.x = this.app.screen.width / 2 - ps.x;
     this.world.y = this.app.screen.height / 2 - py;
@@ -341,7 +443,7 @@ export class GameRenderer {
     for (const ra of this.animals.values()) {
       ra.rx += (ra.tx - ra.rx) * k; ra.ry += (ra.ty - ra.ry) * k;
       const s = gridToScreen(ra.rx, ra.ry);
-      ra.sprite.x = s.x; ra.sprite.y = s.y - elevAt(ra.rx, ra.ry, this.seed) * MAX_ELEV_PX; ra.sprite.zIndex = depthOf(ra.rx, ra.ry) + 0.1;
+      ra.sprite.x = s.x; ra.sprite.y = s.y - this.elevAtL(ra.rx, ra.ry) * MAX_ELEV_PX; ra.sprite.zIndex = depthOf(ra.rx, ra.ry) + 0.1;
     }
     for (const rn of this.nodes.values()) if (rn.pulse > 0) { rn.pulse = Math.max(0, rn.pulse - dt * 6); rn.sprite.scale.set(1 + 0.16 * rn.pulse); }
     for (let i = this.floats.length - 1; i >= 0; i--) {
@@ -360,7 +462,7 @@ export class GameRenderer {
     let best: { x: number; y: number } | null = null, bestDepth = -Infinity;
     for (let ox = -1; ox <= K; ox++) for (let oy = -1; oy <= K; oy++) {
       const tx = bx + ox, ty = by + oy;
-      const lift = tileAt(tx, ty, this.seed).elevation * MAX_ELEV_PX;
+      const lift = this.elevAtL(tx, ty) * MAX_ELEV_PX;
       const s = gridToScreen(tx, ty), cyv = s.y - lift;
       if (Math.abs(wx - s.x) / hw + Math.abs(wy - cyv) / hh <= 1 && tx + ty > bestDepth) { bestDepth = tx + ty; best = { x: tx, y: ty }; }
     }
@@ -368,7 +470,7 @@ export class GameRenderer {
   }
 
   private computeTarget(): void {
-    const placing = this.selected?.kind === 'place';
+    const placing = this.selected?.kind === 'place' && this.loc === 'surface';
     this.ghost.clear();
     let next: InteractTarget = null;
     this.placeTile = null;
@@ -390,8 +492,8 @@ export class GameRenderer {
           if (d < bestD && Math.hypot(ra.rx - this.prx, ra.ry - this.pry) <= INTERACT_RANGE) { bestD = d; next = { kind: 'animal', id }; }
         }
         if (!next) {
-          const t = this.pickTile(wx, wy), key = t.x + ',' + t.y;
-          if (!this.depleted.has(key) && nodeAt(t.x, t.y, this.seed) && Math.hypot(t.x - this.prx, t.y - this.pry) <= INTERACT_RANGE) next = { kind: 'node', x: t.x, y: t.y };
+          const t = this.pickTile(wx, wy), key = this.nodeKey(t.x, t.y);
+          if (!this.depleted.has(key) && this.nodeKindAtL(t.x, t.y) && Math.hypot(t.x - this.prx, t.y - this.pry) <= INTERACT_RANGE) next = { kind: 'node', x: t.x, y: t.y };
         }
         this.app.canvas.style.cursor = next ? 'pointer' : 'default';
       }
@@ -401,8 +503,8 @@ export class GameRenderer {
     this.highlight.clear();
     if (next) {
       let hx = 0, hy = 0, hl = 0;
-      if (next.kind === 'node') { hx = next.x; hy = next.y; hl = tileAt(next.x, next.y, this.seed).elevation * MAX_ELEV_PX; }
-      else { const ra = this.animals.get(next.id); if (ra) { hx = ra.rx; hy = ra.ry; hl = elevAt(ra.rx, ra.ry, this.seed) * MAX_ELEV_PX; } }
+      if (next.kind === 'node') { hx = next.x; hy = next.y; hl = this.elevAtL(next.x, next.y) * MAX_ELEV_PX; }
+      else { const ra = this.animals.get(next.id); if (ra) { hx = ra.rx; hy = ra.ry; hl = this.elevAtL(ra.rx, ra.ry) * MAX_ELEV_PX; } }
       const s = gridToScreen(hx, hy), hw = TILE_W / 2, hh = TILE_H / 2, yy = s.y - hl;
       this.highlight.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).stroke({ width: 2, color: next.kind === 'animal' ? 0xff6b6b : 0xf5c96b, alpha: 0.95 });
     }
@@ -418,12 +520,48 @@ export class GameRenderer {
   private emitInteract(): void { this.onInteract(this.active, this.target); }
 
   private drawDarkness(): void {
-    const d = this.nightAlpha(this.tod);
     this.darkness.clear();
+    if (this.loc === 'cave') {
+      if (this.caveDark) { this.caveDark.visible = true; this.ensureVignette(); }
+      return;
+    }
+    if (this.caveDark) this.caveDark.visible = false;
+    const d = this.nightAlpha(this.tod);
     if (d > 0.001) this.darkness.rect(0, 0, this.app.screen.width, this.app.screen.height).fill({ color: 0x0a1230, alpha: d });
   }
   private nightAlpha(tod: number): number {
     const dist = Math.abs(tod - 0.5) * 2, x = Math.min(1, Math.max(0, (dist - 0.35) / 0.4));
     return NIGHT_MAX_DARK * (x * x * (3 - 2 * x));
+  }
+
+  // Vignette radial (linterna) que oscurece la cueva salvo alrededor del jugador.
+  private ensureVignette(): void {
+    if (!this.caveDark) return;
+    const w = this.app.screen.width, h = this.app.screen.height;
+    if (w === this.vigW && h === this.vigH && this.caveDark.texture !== Texture.EMPTY) return;
+    this.vigW = w; this.vigH = h;
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, w); cv.height = Math.max(1, h);
+    const ctx = cv.getContext('2d')!;
+    const cx = w / 2, cy = h / 2;
+    const grad = ctx.createRadialGradient(cx, cy, Math.min(w, h) * 0.12, cx, cy, Math.hypot(w, h) * 0.6);
+    grad.addColorStop(0, 'rgba(8,8,16,0)');
+    grad.addColorStop(0.5, 'rgba(7,7,14,0.5)');
+    grad.addColorStop(1, 'rgba(3,4,9,0.96)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+    const old = this.caveDark.texture;
+    this.caveDark.texture = Texture.from(cv);
+    if (old && old !== Texture.EMPTY) old.destroy(true);
+    this.caveDark.x = 0; this.caveDark.y = 0;
+  }
+
+  // Aviso "Pulsa E" cuando el jugador está sobre una entrada / salida.
+  setEntranceHint(on: boolean): void {
+    let el = document.getElementById('cave-hint');
+    if (!on) { if (el) el.style.display = 'none'; return; }
+    if (!el) { el = document.createElement('div'); el.id = 'cave-hint'; document.body.appendChild(el); }
+    el.textContent = this.loc === 'cave' ? 'Pulsa E para salir de la cueva' : 'Pulsa E para entrar a la cueva';
+    el.style.display = 'block';
   }
 }
