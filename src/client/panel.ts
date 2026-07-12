@@ -6,6 +6,7 @@ import { itemSpriteURL } from './itemsprites';
 import { drawAvatar, DEFAULT_CUSTOM, type Customization } from './avatar';
 import { INV_MAIN, INV_HOTBAR, type Slot } from '../shared/inventory';
 import { enableDrag, slotHtml } from './slotdrag';
+import { openSlotMenu } from './slotmenu';
 import type { InvAddr, Stats } from '../shared/protocol';
 
 const STAT_ROWS = [
@@ -21,9 +22,10 @@ let slots: Slot[] = [];
 let lastStats: Stats = { health: 100, food: 100, thirst: 100, stamina: 100 };
 let onMove: (from: InvAddr, to: InvAddr) => void = () => {};
 let onSort: () => void = () => {};
+let onEat: (item: string) => void = () => {};
 
-export function initPanel(cb: { onMove: (from: InvAddr, to: InvAddr) => void; onSort: () => void }): void {
-  onMove = cb.onMove; onSort = cb.onSort;
+export function initPanel(cb: { onMove: (from: InvAddr, to: InvAddr) => void; onSort: () => void; onEat: (item: string) => void }): void {
+  onMove = cb.onMove; onSort = cb.onSort; onEat = cb.onEat;
 }
 export function setPanelCustom(c: Customization): void { custom = c; }
 export function isPanelOpen(): boolean { return open; }
@@ -86,5 +88,10 @@ function render(): void {
   document.getElementById('panel-close')?.addEventListener('click', () => { open = false; render(); });
   document.getElementById('inv-sort')?.addEventListener('click', () => onSort());
   const card = p.querySelector('.panel-card') as HTMLElement | null;
-  if (card) enableDrag(card, onMove);
+  if (card) enableDrag(card, onMove, {
+    onContext: (addr, x, y) => {
+      const s = slots[addr.i];
+      if (s && ITEMS[s.id]?.food) openSlotMenu(x, y, { count: s.count, canEat: true, onEat: () => onEat(s.id) });
+    },
+  });
 }

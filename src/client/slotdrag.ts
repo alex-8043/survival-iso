@@ -14,8 +14,14 @@ export function parseAddr(s: string | undefined): InvAddr | null {
   return null;
 }
 
+export interface DragOpts {
+  onShift?: (a: InvAddr) => void;
+  onContext?: (a: InvAddr, x: number, y: number) => void;
+}
+
 // Habilita arrastre en todas las .islot[data-addr] dentro de root.
-export function enableDrag(root: HTMLElement, onMove: (from: InvAddr, to: InvAddr) => void): void {
+export function enableDrag(root: HTMLElement, onMove: (from: InvAddr, to: InvAddr) => void, opts: DragOpts = {}): void {
+  root.addEventListener('contextmenu', (e) => e.preventDefault());
   root.querySelectorAll<HTMLElement>('.islot[data-addr]').forEach((el) => {
     el.addEventListener('pointerdown', (ev) => {
       const from = parseAddr(el.dataset.addr);
@@ -23,6 +29,8 @@ export function enableDrag(root: HTMLElement, onMove: (from: InvAddr, to: InvAdd
       const spriteEl = el.querySelector<HTMLElement>('.isprite');
       const bg = spriteEl?.style.backgroundImage;
       if (!bg || bg === 'none') return; // ranura vacía
+      if (ev.button === 2) { ev.preventDefault(); opts.onContext?.(from, ev.clientX, ev.clientY); return; }
+      if (ev.shiftKey) { ev.preventDefault(); opts.onShift?.(from); return; }
       ev.preventDefault();
       const ghost = document.createElement('div');
       ghost.className = 'drag-ghost';

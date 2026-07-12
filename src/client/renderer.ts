@@ -2,9 +2,9 @@
 // estructuras colocables, barca, día/noche y selección/colocación con el ratón.
 
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
-import { TILE_W, TILE_H, MAX_ELEV_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
+import { TILE_W, TILE_H, MAX_ELEV_PX, BLOCK_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
-import { tileAt, nodeAt, isWater, playerBlocked, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, springAt, type CaveTile } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, type CaveTile } from '../shared/worldgen';
 import { avatarCanvas, type AvatarAction, type Customization, type HeldTool } from './avatar';
 import { ITEMS } from '../shared/items';
 import { getCode, keyLabel } from './keybinds';
@@ -16,6 +16,7 @@ const TERRAIN_COLORS: Record<number, number> = {
   [TERRAIN.DEEP_WATER]: 0x24507a, [TERRAIN.WATER]: 0x3a79a6, [TERRAIN.SAND]: 0xd9c48a,
   [TERRAIN.GRASS]: 0x5a9e4f, [TERRAIN.FOREST]: 0x468a41, [TERRAIN.ROCK]: 0x8f8b7c,
   [TERRAIN.MOUNTAIN]: 0x7c746b, [TERRAIN.SNOW]: 0xe9edf2,
+  [TERRAIN.DESERT]: 0xe3cf8a, [TERRAIN.JUNGLE]: 0x2f7d3a, [TERRAIN.SWAMP]: 0x5e6f42,
 };
 const ANIM_FRAMES: Record<AvatarAction, number> = { idle: 1, walk: 6, run: 6, swing: 6, swim: 6 };
 const ANIM_RATE: Record<AvatarAction, number> = { idle: 0.5, walk: 1.5, run: 2.6, swing: 2.2, swim: 1.3 };
@@ -57,7 +58,8 @@ export class GameRenderer {
   heldKey = '';
   animT = 0;
   prx = 0; pry = 0; lastPrx = 0; lastPry = 0;
-  ptile = ''; tod = 0.35; onWater = false; hasBoat = false;
+  snapSpeed = 0; spdEMA = 0; curAction: AvatarAction = 'idle'; actionHold = 0;
+  ptile = ''; tod = 0.35; onWater = false; hasBoat = false; riding = false;
 
   loc: Location = 'surface';
   caveSeed = 0;
@@ -76,6 +78,8 @@ export class GameRenderer {
   onPlace: (x: number, y: number, item: string) => void = () => {};
   onOpenStation: (type: string) => void = () => {};
   onOpenChest: (id: number) => void = () => {};
+  onBoardBoat: (id: number) => void = () => {};
+  onEat: (item: string) => void = () => {};
 
   async init(parent: HTMLElement): Promise<void> {
     this.app = new Application();
@@ -101,13 +105,21 @@ export class GameRenderer {
       this.mouseX = e.clientX - r.left;
       this.mouseY = e.clientY - r.top;
     });
-    cv.addEventListener('pointerdown', () => {
-      if (this.selected?.kind === 'place' && this.selected.item && this.placeTile) {
+    cv.addEventListener('contextmenu', (e) => e.preventDefault());
+    cv.addEventListener('pointerdown', (e) => {
+      if (e.button === 2) { // clic derecho: comer si hay comida seleccionada
+        const it = this.selected?.item;
+        if (it && ITEMS[it]?.food) this.onEat(it);
+        return;
+      }
+      const placing = this.selected?.kind === 'place' || this.selected?.kind === 'boat';
+      if (placing && this.selected?.item && this.placeTile) {
         this.onPlace(this.placeTile.x, this.placeTile.y, this.selected.item);
         return;
       }
       if (this.structTarget) {
         if (this.structTarget.type === 'chest') this.onOpenChest(this.structTarget.id);
+        else if (this.structTarget.type === 'boat') this.onBoardBoat(this.structTarget.id);
         else this.onOpenStation(this.structTarget.type);
         return;
       }
@@ -187,9 +199,12 @@ export class GameRenderer {
   }
 
   // --- Consultas de mundo según la capa activa (superficie o cueva) ---
+  // Devuelve un valor normalizado tal que (elevAtL * MAX_ELEV_PX) = altura en px.
+  // Superficie: relieve por bloques (level * BLOCK_PX). Cueva: elevación 0..1.
   private elevAtL(x: number, y: number): number {
     const rx = Math.round(x), ry = Math.round(y);
-    return this.loc === 'cave' ? caveTile(rx, ry, this.caveSeed).elevation : tileAt(rx, ry, this.seed).elevation;
+    if (this.loc === 'cave') return caveTile(rx, ry, this.caveSeed).elevation;
+    return (tileAt(rx, ry, this.seed).level * BLOCK_PX) / MAX_ELEV_PX;
   }
   private nodeKindAtL(x: number, y: number): string | null {
     return this.loc === 'cave' ? caveNodeAt(x, y, this.caveSeed) : nodeAt(x, y, this.seed);
@@ -199,7 +214,8 @@ export class GameRenderer {
   }
 
   applySnapshot(snap: Snapshot): void {
-    this.prx = snap.px; this.pry = snap.py; this.tod = snap.time.tod; this.onWater = snap.onWater;
+    this.snapSpeed = Math.hypot(snap.px - this.prx, snap.py - this.pry) * 60; // tiles/s (1 tick = 1/60 s)
+    this.prx = snap.px; this.pry = snap.py; this.tod = snap.time.tod; this.onWater = snap.onWater; this.riding = snap.riding;
     const seen = new Set<number>();
     for (const a of snap.animals) {
       if (!a.alive) continue;
@@ -221,7 +237,7 @@ export class GameRenderer {
         const sprite = this.makeStructure(s.type);
         const p = gridToScreen(s.x, s.y);
         sprite.x = p.x;
-        sprite.y = p.y - tileAt(s.x, s.y, this.seed).elevation * MAX_ELEV_PX;
+        sprite.y = p.y - this.elevAtL(s.x, s.y) * MAX_ELEV_PX;
         sprite.zIndex = depthOf(s.x, s.y) + 0.15;
         sprite.visible = this.loc === 'surface';
         this.entities.addChild(sprite);
@@ -268,25 +284,23 @@ export class GameRenderer {
     }
     for (const [key, rn] of this.nodes) if (!want.has(key)) { this.entities.removeChild(rn.sprite); rn.sprite.destroy(); this.nodes.delete(key); }
 
-    // Decoración de cueva (no interactiva)
-    if (this.loc === 'cave') {
-      const wantD = new Set<string>();
-      for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
-        const x = ptx + dx, y = pty + dy;
-        const kind = caveDecorAt(x, y, this.caveSeed);
-        if (!kind) continue;
-        const key = 'd' + x + ',' + y;
-        wantD.add(key);
-        if (!this.decor.has(key)) {
-          const sprite = this.makeDecor(kind);
-          const s = gridToScreen(x, y);
-          sprite.x = s.x; sprite.y = s.y; sprite.zIndex = depthOf(x, y) - 0.05;
-          this.entities.addChild(sprite);
-          this.decor.set(key, sprite);
-        }
+    // Decoración no interactiva (cueva o bioma de superficie)
+    const wantD = new Set<string>();
+    for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+      const x = ptx + dx, y = pty + dy;
+      const kind = this.loc === 'cave' ? caveDecorAt(x, y, this.caveSeed) : surfaceDecorAt(x, y, this.seed);
+      if (!kind) continue;
+      const key = 'd' + x + ',' + y;
+      wantD.add(key);
+      if (!this.decor.has(key)) {
+        const sprite = this.makeDecor(kind);
+        const s = gridToScreen(x, y);
+        sprite.x = s.x; sprite.y = s.y - this.elevAtL(x, y) * MAX_ELEV_PX; sprite.zIndex = depthOf(x, y) + 0.02;
+        this.entities.addChild(sprite);
+        this.decor.set(key, sprite);
       }
-      for (const [key, sp] of this.decor) if (!wantD.has(key)) { this.entities.removeChild(sp); sp.destroy(); this.decor.delete(key); }
     }
+    for (const [key, sp] of this.decor) if (!wantD.has(key)) { this.entities.removeChild(sp); sp.destroy(); this.decor.delete(key); }
   }
 
   private makeDecor(kind: string): Container {
@@ -308,6 +322,24 @@ export class GameRenderer {
       c.circle(-6, 0, 2).fill({ color: 0xd9d2c2 });
       c.circle(6, 0, 2).fill({ color: 0xd9d2c2 });
       c.rect(-2, -5, 2, 10).fill({ color: 0xc7c0b0 });
+    } else if (kind === 'cactus') {
+      c.ellipse(0, -1, 8, 3).fill({ color: 0x000000, alpha: 0.18 });
+      c.roundRect(-3, -26, 6, 26, 3).fill({ color: 0x3f8a3a });
+      c.roundRect(-9, -16, 4, 8, 2).fill({ color: 0x3f8a3a });
+      c.roundRect(-9, -16, 8, 4, 2).fill({ color: 0x3f8a3a });
+      c.roundRect(6, -20, 4, 9, 2).fill({ color: 0x3f8a3a });
+      c.roundRect(2, -20, 8, 4, 2).fill({ color: 0x3f8a3a });
+      c.rect(-1, -24, 2, 22).fill({ color: 0x347531 });
+    } else if (kind === 'reed') {
+      for (const [ox, h] of [[-4, 12], [0, 16], [4, 13], [7, 10]] as const) c.rect(ox, -h, 1.6, h).fill({ color: 0x6f8a3a });
+      for (const [ox, h] of [[-4, 12], [0, 16], [4, 13]] as const) c.ellipse(ox + 0.8, -h, 1.5, 3).fill({ color: 0x8a6a2a });
+    } else if (kind === 'deadbush') {
+      for (const dx of [-6, -2, 3, 7]) { c.moveTo(0, 0); c.lineTo(dx, -9); }
+      c.moveTo(0, 0); c.lineTo(0, -11);
+      c.stroke({ width: 1.5, color: 0x8a6a3a });
+    } else if (kind === 'fern') {
+      for (const a of [-0.9, -0.4, 0, 0.4, 0.9]) { c.moveTo(0, 0); c.lineTo(Math.sin(a) * 9, -12 - Math.cos(a) * 3); }
+      c.stroke({ width: 1.8, color: 0x2f7d3a });
     } else {
       c.ellipse(-3, 0, 4, 2.4).fill({ color: 0x55555f });
       c.ellipse(3, -1, 3, 2).fill({ color: 0x484852 });
@@ -326,7 +358,7 @@ export class GameRenderer {
     const R = this.viewRadius();
     const hw = TILE_W / 2, hh = TILE_H / 2;
     const halfW = this.app.screen.width / 2 + TILE_W;
-    const halfH = this.app.screen.height / 2 + TILE_H + MAX_ELEV_PX;
+    const halfH = this.app.screen.height / 2 + TILE_H + (this.loc === 'cave' ? MAX_ELEV_PX : 270);
     const cave = this.loc === 'cave';
     for (let d = -2 * R; d <= 2 * R; d++) {
       for (let dx = Math.max(-R, d - R); dx <= Math.min(R, d + R); dx++) {
@@ -334,24 +366,48 @@ export class GameRenderer {
         const relX = (dx - dy) * hw, relY = (dx + dy) * hh;
         if (relX < -halfW || relX > halfW || relY < -halfH || relY > halfH) continue;
         const x = ptx + dx, y = pty + dy;
-        const info = cave ? caveTile(x, y, this.caveSeed) : tileAt(x, y, this.seed);
-        let base: number;
-        let ck: string = '';
-        if (cave) {
-          ck = (info as CaveTile).kind;
-          base = ck === 'wall' ? CAVE_WALL : ck === 'lava' ? 0xd83a10 : ck === 'water' ? 0x2f6aa0 : CAVE_FLOOR;
-        } else base = TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f;
         const s = gridToScreen(x, y);
-        const lift = info.elevation * MAX_ELEV_PX, topY = s.y - lift;
-        if (lift > 3) {
-          g.poly([s.x - hw, topY, s.x, topY + hh, s.x, s.y + hh, s.x - hw, s.y]).fill({ color: darker(base, 0.6) });
-          g.poly([s.x, topY + hh, s.x + hw, topY, s.x + hw, s.y, s.x, s.y + hh]).fill({ color: darker(base, 0.45) });
+        if (cave) {
+          const info = caveTile(x, y, this.caveSeed);
+          const ck = info.kind;
+          const base = ck === 'wall' ? CAVE_WALL : ck === 'lava' ? 0xd83a10 : ck === 'water' ? 0x2f6aa0 : CAVE_FLOOR;
+          const lift = info.elevation * MAX_ELEV_PX, topY = s.y - lift;
+          if (lift > 3) {
+            g.poly([s.x - hw, topY, s.x, topY + hh, s.x, s.y + hh, s.x - hw, s.y]).fill({ color: darker(base, 0.6) });
+            g.poly([s.x, topY + hh, s.x + hw, topY, s.x + hw, s.y, s.x, s.y + hh]).fill({ color: darker(base, 0.45) });
+          }
+          g.poly([s.x, topY - hh, s.x + hw, topY, s.x, topY + hh, s.x - hw, topY]).fill({ color: base });
+          if (ck === 'lava') g.poly([s.x, topY - hh * 0.5, s.x + hw * 0.5, topY, s.x, topY + hh * 0.5, s.x - hw * 0.5, topY]).fill({ color: 0xff9b3a, alpha: 0.85 });
+          if (ck === 'water') g.poly([s.x, topY - hh * 0.55, s.x + hw * 0.55, topY, s.x, topY + hh * 0.55, s.x - hw * 0.55, topY]).fill({ color: 0x4f95c8, alpha: 0.7 });
+        } else {
+          const info = tileAt(x, y, this.seed);
+          if (info.water) {
+            const col = TERRAIN_COLORS[info.terrain] ?? 0x3a79a6;
+            g.poly([s.x, s.y - hh, s.x + hw, s.y, s.x, s.y + hh, s.x - hw, s.y]).fill({ color: col });
+            g.poly([s.x, s.y - hh * 0.5, s.x + hw * 0.5, s.y, s.x, s.y + hh * 0.5, s.x - hw * 0.5, s.y]).fill({ color: 0x4f93c4, alpha: 0.5 });
+          } else {
+            const lvl = info.level;
+            const base = TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f;
+            const topY = s.y - lvl * BLOCK_PX;
+            const rN = tileAt(x + 1, y, this.seed), lN = tileAt(x, y + 1, this.seed);
+            const rDrop = lvl - (rN.water ? 0 : rN.level), lDrop = lvl - (lN.water ? 0 : lN.level);
+            if (rDrop > 0) {
+              const fh = rDrop * BLOCK_PX;
+              g.poly([s.x + hw, topY, s.x, topY + hh, s.x, topY + hh + fh, s.x + hw, topY + fh]).fill({ color: darker(base, 0.52) });
+              const n = Math.min(rDrop, 8);
+              for (let i = 1; i < n; i++) { const yy = topY + i * BLOCK_PX; g.moveTo(s.x + hw, yy); g.lineTo(s.x, yy + hh); g.stroke({ width: 1, color: 0x000000, alpha: 0.13 }); }
+            }
+            if (lDrop > 0) {
+              const fh = lDrop * BLOCK_PX;
+              g.poly([s.x - hw, topY, s.x, topY + hh, s.x, topY + hh + fh, s.x - hw, topY + fh]).fill({ color: darker(base, 0.4) });
+              const n = Math.min(lDrop, 8);
+              for (let i = 1; i < n; i++) { const yy = topY + i * BLOCK_PX; g.moveTo(s.x - hw, yy); g.lineTo(s.x, yy + hh); g.stroke({ width: 1, color: 0x000000, alpha: 0.13 }); }
+            }
+            g.poly([s.x, topY - hh, s.x + hw, topY, s.x, topY + hh, s.x - hw, topY]).fill({ color: base });
+            if (caveEntranceAt(x, y, this.seed)) this.drawEntrance(g, s.x, topY);
+            else if (springAt(x, y, this.seed)) this.drawSpring(g, s.x, topY);
+          }
         }
-        g.poly([s.x, topY - hh, s.x + hw, topY, s.x, topY + hh, s.x - hw, topY]).fill({ color: base });
-        if (cave && ck === 'lava') g.poly([s.x, topY - hh * 0.5, s.x + hw * 0.5, topY, s.x, topY + hh * 0.5, s.x - hw * 0.5, topY]).fill({ color: 0xff9b3a, alpha: 0.85 });
-        if (cave && ck === 'water') g.poly([s.x, topY - hh * 0.55, s.x + hw * 0.55, topY, s.x, topY + hh * 0.55, s.x - hw * 0.55, topY]).fill({ color: 0x4f95c8, alpha: 0.7 });
-        if (!cave && caveEntranceAt(x, y, this.seed)) this.drawEntrance(g, s.x, topY);
-        else if (!cave && springAt(x, y, this.seed)) this.drawSpring(g, s.x, topY);
       }
     }
   }
@@ -447,6 +503,11 @@ export class GameRenderer {
       g.roundRect(-13, -20, 26, 3, 3).fill({ color: 0xa97b48 });
       g.rect(-2.5, -20, 5, 22).fill({ color: 0xcaa24b });
       g.roundRect(-3, -11, 6, 5, 1).fill({ color: 0x6a4a24 });
+    } else if (type === 'boat') {
+      g.ellipse(0, 6, 22, 7).fill({ color: 0x000000, alpha: 0.14 });
+      g.poly([-20, 0, 20, 0, 13, 10, -13, 10]).fill({ color: 0x8a5a2b });
+      g.poly([-20, 0, 20, 0, 16, -3, -16, -3]).fill({ color: 0xa06a34 });
+      g.rect(-1.5, -12, 3, 12).fill({ color: 0x6a4a28 });
     } else {
       const hw = (TILE_W / 2) * 0.72, hh = (TILE_H / 2) * 0.72, H = 20;
       g.ellipse(0, 2, hw, 6).fill({ color: 0x000000, alpha: 0.18 });
@@ -553,22 +614,28 @@ export class GameRenderer {
       } else this.exitMarker.visible = false;
     }
 
-    // animación
-    const spd = Math.hypot(this.prx - this.lastPrx, this.pry - this.lastPry) / dt;
-    this.lastPrx = this.prx; this.lastPry = this.pry;
-    const moving = spd > 0.35;
-    let action: AvatarAction = 'idle';
-    if (this.active && this.target) action = 'swing';
-    else if (moving && this.onWater) action = 'swim';
-    else if (moving && spd > PLAYER_SPEED * 1.2) action = 'run';
-    else if (moving) action = 'walk';
+    // animación: velocidad estimada por snapshots (independiente de los FPS) y
+    // suavizada con histéresis para que no se entrecorte.
+    this.spdEMA += (this.snapSpeed - this.spdEMA) * Math.min(1, dt * 12);
+    const spd = this.spdEMA;
+    const moving = spd > 0.4;
+    let want: AvatarAction = 'idle';
+    if (this.active && this.target) want = 'swing';
+    else if (moving && this.onWater) want = 'swim';
+    else if (moving && spd > PLAYER_SPEED * 1.25) want = 'run';
+    else if (moving) want = 'walk';
+    this.actionHold -= dt;
+    if (want !== this.curAction && (want === 'swing' || this.curAction === 'swing' || this.actionHold <= 0)) {
+      this.curAction = want; this.actionHold = 0.14;
+    }
+    const action = this.curAction;
     this.animT = (this.animT + dt * ANIM_RATE[action]) % 1;
     const fr = this.frames[action];
     if (fr && fr.length) this.player.texture = fr[Math.floor(this.animT * fr.length) % fr.length];
 
-    // barca
+    // barca (montada)
     if (this.boat) {
-      this.boat.visible = this.onWater && this.hasBoat;
+      this.boat.visible = this.riding;
       if (this.boat.visible) { this.boat.x = ps.x; this.boat.y = py + 2; this.boat.zIndex = depthOf(this.prx, this.pry) + 0.28; }
     }
 
@@ -593,7 +660,9 @@ export class GameRenderer {
   private pickTile(wx: number, wy: number): { x: number; y: number } {
     const g0 = screenToGrid(wx, wy);
     const bx = Math.round(g0.x), by = Math.round(g0.y);
-    const hw = TILE_W / 2, hh = TILE_H / 2, K = Math.ceil(MAX_ELEV_PX / hh) + 1;
+    const hw = TILE_W / 2, hh = TILE_H / 2;
+    const maxLift = this.loc === 'cave' ? MAX_ELEV_PX : 7 * BLOCK_PX;
+    const K = Math.ceil(maxLift / hh) + 1;
     let best: { x: number; y: number } | null = null, bestDepth = -Infinity;
     for (let ox = -1; ox <= K; ox++) for (let oy = -1; oy <= K; oy++) {
       const tx = bx + ox, ty = by + oy;
@@ -605,7 +674,7 @@ export class GameRenderer {
   }
 
   private computeTarget(): void {
-    const placing = this.selected?.kind === 'place' && this.loc === 'surface';
+    const placing = (this.selected?.kind === 'place' || this.selected?.kind === 'boat') && this.loc === 'surface';
     this.ghost.clear();
     let next: InteractTarget = null;
     this.placeTile = null;
@@ -616,7 +685,9 @@ export class GameRenderer {
       if (placing) {
         const t = this.pickTile(wx, wy);
         this.placeTile = t;
-        const valid = !isWater(tileAt(t.x, t.y, this.seed).terrain) && !playerBlocked(tileAt(t.x, t.y, this.seed).terrain) && Math.hypot(t.x - this.prx, t.y - this.pry) <= 4.5;
+        const water = isWater(tileAt(t.x, t.y, this.seed).terrain);
+        const isBoat = this.selected?.item === 'boat';
+        const valid = (isBoat ? water : !water) && Math.hypot(t.x - this.prx, t.y - this.pry) <= 4.5;
         const s = gridToScreen(t.x, t.y), yy = s.y - tileAt(t.x, t.y, this.seed).elevation * MAX_ELEV_PX;
         const hw = TILE_W / 2, hh = TILE_H / 2;
         this.ghost.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).fill({ color: valid ? 0x8bd17c : 0xe06666, alpha: 0.35 }).stroke({ width: 2, color: valid ? 0x8bd17c : 0xe06666, alpha: 0.9 });
@@ -624,7 +695,7 @@ export class GameRenderer {
       } else {
         const pick = this.pickTile(wx, wy);
         const st = this.structTiles.get(pick.x + ',' + pick.y);
-        if (st && (st.type === 'crafting_table' || st.type === 'furnace' || st.type === 'forge' || st.type === 'chest') && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) {
+        if (st && (st.type === 'crafting_table' || st.type === 'furnace' || st.type === 'forge' || st.type === 'chest' || st.type === 'boat') && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) {
           this.structTarget = { id: st.id, type: st.type, x: pick.x, y: pick.y };
           this.app.canvas.style.cursor = 'pointer';
         } else {

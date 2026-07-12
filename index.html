@@ -171,6 +171,14 @@
       #chest { position: fixed; inset: 0; z-index: 43; display: none; align-items: center; justify-content: center; background: rgba(6,10,6,.6); }
       .chest-card { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; width: min(520px, 94vw); max-height: 92vh; overflow: auto; }
       .chest-card h3 { margin: 0; }
+
+      /* Menú contextual de ranura (comer / dividir) */
+      #slot-menu { position: fixed; z-index: 100001; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px; display: flex; flex-direction: column; gap: 4px; min-width: 132px; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
+      #slot-menu button { background: rgba(255,255,255,.06); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 13px; cursor: pointer; text-align: left; }
+      #slot-menu button:hover { background: rgba(245,201,107,.18); }
+      #slot-menu .sm-split { display: flex; gap: 4px; }
+      #slot-menu .sm-split input { width: 52px; background: rgba(0,0,0,.3); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px; font-size: 13px; }
+      #slot-menu .sm-split button { flex: 1; text-align: center; }
     </style>
   </head>
   <body>

@@ -24,7 +24,7 @@ import {
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt } from '../shared/worldgen';
+import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
 import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor } from '../shared/items';
 import type { AnimalType } from '../shared/items';
@@ -65,6 +65,7 @@ export interface Sim {
   caveSeed: number;
   surfaceReturn: { x: number; y: number } | null;
   caveEntrance: { x: number; y: number } | null;
+  riding: boolean;
 }
 
 export interface StepResult {
@@ -106,7 +107,7 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     inv: makeSlots(INV_SIZE), chests: {},
     stats: { health: 100, food: 100, thirst: 100, stamina: 100 },
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
-    location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null,
+    location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null, riding: false,
   };
 }
 
@@ -135,6 +136,7 @@ export function createSimFromSave(save: SaveState): Sim {
   sim.caveSeed = save.caveSeed ?? 0;
   sim.surfaceReturn = save.surfaceReturn ?? null;
   sim.caveEntrance = save.caveEntrance ?? null;
+  sim.riding = save.riding ?? false;
   if (sim.location === 'surface') for (let i = 0; i < 4; i++) trySpawnAnimal(sim);
   return sim;
 }
@@ -151,6 +153,7 @@ export function serializeSim(sim: Sim): SaveState {
     loc: sim.location, caveSeed: sim.caveSeed,
     surfaceReturn: sim.surfaceReturn ?? undefined,
     caveEntrance: sim.caveEntrance ?? undefined,
+    riding: sim.riding,
   };
 }
 
@@ -188,10 +191,14 @@ function blockedAt(sim: Sim, x: number, y: number): boolean {
   const tx = Math.round(x);
   const ty = Math.round(y);
   if (sim.location === 'cave') return !caveTile(tx, ty, sim.caveSeed).passable; // muro/lava/agua
-  if (playerBlocked(tileAt(tx, ty, sim.seed).terrain)) return true;
   if (springAt(tx, ty, sim.seed)) return true; // no se camina sobre el manantial
   const s = structureAt(sim, tx, ty);
-  return !!(s && ITEMS[s.type]?.solid);
+  if (s && ITEMS[s.type]?.solid) return true;
+  const c = tileAt(tx, ty, sim.seed);
+  if (c.water) return false; // se puede nadar
+  // Colisión por altura: sólo se sube 1 bloque (salto de 1 m).
+  const pl = levelAt(Math.round(Position.x[sim.playerId]), Math.round(Position.y[sim.playerId]), sim.seed);
+  return c.level - pl >= 2;
 }
 
 function layerCount(sim: Sim, layer: Location): number {
@@ -235,6 +242,9 @@ function trySpawnCaveMob(sim: Sim): void {
   }
 }
 
+// Expuesto para pruebas: ¿está bloqueado el destino desde la posición actual?
+export function isBlocked(sim: Sim, x: number, y: number): boolean { return blockedAt(sim, x, y); }
+
 export function onWaterOf(sim: Sim): boolean {
   if (sim.location === 'cave') return false;
   return isWater(tileAt(Math.round(Position.x[sim.playerId]), Math.round(Position.y[sim.playerId]), sim.seed).terrain);
@@ -256,8 +266,7 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   let px = Position.x[eid];
   let py = Position.y[eid];
   const onWater = sim.location !== 'cave' && isWater(tileAt(Math.round(px), Math.round(py), sim.seed).terrain);
-  const hasBoat = invCount(sim, 'boat') > 0;
-  const waterFactor = onWater ? (hasBoat ? BOAT_MULT : WATER_SLOW) : 1;
+  const waterFactor = onWater ? (sim.riding ? BOAT_MULT : WATER_SLOW) : 1;
   const speed = PLAYER_SPEED * (sprinting ? SPRINT_MULT : 1) * waterFactor;
   const len = Math.hypot(gx, gy) || 1;
   const vx = moving ? (gx / len) * speed : 0;
@@ -268,6 +277,14 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   if (!blockedAt(sim, px, ny)) py = ny;
   Position.x[eid] = px;
   Position.y[eid] = py;
+
+  // Bajarse de la barca al llegar a tierra (devuelve la barca al inventario).
+  if (sim.riding && !(sim.location !== 'cave' && isWater(tileAt(Math.round(px), Math.round(py), sim.seed).terrain))) {
+    sim.riding = false;
+    addItem(sim, 'boat', 1);
+    res.inventoryChanged = true;
+    res.floaters.push({ text: 'Te bajas de la barca', color: 0x9edb8a, x: px, y: py });
+  }
 
   const lowEnergy = sim.stats.food < STAMINA_LOW || sim.stats.thirst < STAMINA_LOW;
   if (sprinting) sim.stats.stamina = Math.max(0, sim.stats.stamina - STAMINA_DRAIN * dt);
@@ -449,7 +466,9 @@ export function place(sim: Sim, item: string, x: number, y: number): { ok: boole
   if (sim.location === 'cave') return { ok: false, floater: { text: 'No puedes construir en la cueva', color: 0xff8a8a, x: px, y: py } };
   if (Math.hypot(x - px, y - py) > 4.5) return { ok: false };
   const terr = tileAt(x, y, sim.seed).terrain;
-  if (isWater(terr) || playerBlocked(terr)) return { ok: false };
+  if (def.place === 'boat') {
+    if (!isWater(terr)) return { ok: false, floater: { text: 'La barca va en el agua', color: 0xff8a8a, x: px, y: py } };
+  } else if (isWater(terr) || playerBlocked(terr)) return { ok: false };
   if (structureAt(sim, x, y)) return { ok: false };
   if (Math.round(px) === x && Math.round(py) === y) return { ok: false };
   takeFrom(sim.inv, item, 1);
@@ -457,6 +476,17 @@ export function place(sim: Sim, item: string, x: number, y: number): { ok: boole
   sim.structures.push({ id, type: item, x, y });
   if (def.place === 'container') sim.chests[id] = makeSlots(CHEST_SIZE);
   return { ok: true };
+}
+
+// Subirse a una barca colocada: la quita del mundo y activa el modo barca.
+export function board(sim: Sim, id: number): { floater?: Floater } {
+  const s = sim.structures.find((st) => st.id === id && st.type === 'boat');
+  if (!s) return {};
+  sim.structures = sim.structures.filter((st) => st.id !== id);
+  sim.riding = true;
+  Position.x[sim.playerId] = s.x;
+  Position.y[sim.playerId] = s.y;
+  return { floater: { text: 'Subes a la barca', color: 0x9edb8a, x: s.x, y: s.y } };
 }
 
 export function consume(sim: Sim, item: string): { ok: boolean; floater?: Floater } {
@@ -492,6 +522,24 @@ export function moveItem(sim: Sim, from: InvAddr, to: InvAddr): void {
 export function sortInv(sim: Sim): void { sortRange(sim.inv, 0, INV_MAIN); }
 export function sortChest(sim: Sim, id: number): void { const c = sim.chests[id]; if (c) sortRange(c, 0, c.length); }
 export function chestItems(sim: Sim, id: number): Slot[] | null { return sim.chests[id] ?? null; }
+
+// Traspaso rápido entre inventario y cofre (pila entera o cantidad concreta).
+export function quickMove(sim: Sim, from: InvAddr, chestId: number): void {
+  moveAmount(sim, from, chestId, 1e9);
+}
+export function moveAmount(sim: Sim, from: InvAddr, chestId: number, amount: number): void {
+  const src = from.c === 'inv' ? sim.inv : sim.chests[from.id];
+  const dest = from.c === 'inv' ? sim.chests[chestId] : sim.inv;
+  if (!src || !dest) return;
+  const s = src[from.i];
+  if (!s) return;
+  const n = Math.max(0, Math.min(Math.floor(amount), s.count));
+  if (n <= 0) return;
+  const left = addTo(dest, s.id, n);
+  const moved = n - left;
+  s.count -= moved;
+  if (s.count <= 0) src[from.i] = null;
+}
 
 export function drink(sim: Sim): { ok: boolean; floater?: Floater } {
   const px = Math.round(Position.x[sim.playerId]);

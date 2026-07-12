@@ -10,7 +10,9 @@ function rowsHtml(): string {
     ['Mover', 'W A S D / Flechas'],
     ['Correr', 'Shift'],
     ['Recolectar · Talar · Atacar', 'Clic (mantener)'],
-    ['Colocar bloque / estación', 'Clic (con objeto)'],
+    ['Colocar bloque / estación / barca', 'Clic (con objeto)'],
+    ['Comer (comida seleccionada)', 'Clic derecho'],
+    ['Abrir mesa / cofre · Subir a barca', 'Clic sobre ella'],
     ['Seleccionar objeto', '1 – 9 / Rueda'],
   ];
   const dyn = ACTIONS.map((a) => [ACTION_LABELS[a], keyLabel(getCode(a))] as [string, string]);

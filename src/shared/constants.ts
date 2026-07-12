@@ -14,7 +14,9 @@ export const SPRINT_MULT = 1.6; // multiplicador al correr (Shift)
 export const INTERACT_RANGE = 2.3; // distancia para recolectar/atacar (tiles)
 export const HARVEST_COOLDOWN = 0.35; // segundos entre golpes
 
-export const MAX_ELEV_PX = 74; // altura visual máxima del relieve (px)
+export const MAX_ELEV_PX = 74; // altura visual del relieve de cueva (px)
+export const BLOCK_PX = 15; // altura en píxeles de un bloque de 1 m (relieve por bloques)
+export const CLIMB_STEP = 1; // bloques que el jugador puede subir de un salto (1 m)
 export const VIEW_TILES = 30; // radio de render alrededor del jugador (tiles)
 export const WATER_SLOW = 0.4; // multiplicador de velocidad nadando (sin barca)
 export const BOAT_MULT = 0.95; // con barca: casi como en tierra (ya no más rápido)

@@ -50,6 +50,7 @@ export interface Snapshot {
   loc: Location;
   caveSeed: number;
   onEntrance: boolean; // sobre una entrada de cueva (superficie) o salida (cueva)
+  riding: boolean; // en barca
 }
 
 export interface InputState {
@@ -82,6 +83,7 @@ export interface SaveState {
   caveSeed?: number;
   surfaceReturn?: { x: number; y: number };
   caveEntrance?: { x: number; y: number };
+  riding?: boolean;
 }
 
 // Cliente -> Simulación
@@ -95,7 +97,10 @@ export type ClientMsg =
   | { t: 'consume'; item?: string }
   | { t: 'drink' }
   | { t: 'toggleCave' }
+  | { t: 'board'; id: number }
   | { t: 'move'; from: InvAddr; to: InvAddr }
+  | { t: 'quickMove'; from: InvAddr; id: number }
+  | { t: 'moveAmount'; from: InvAddr; id: number; amount: number }
   | { t: 'sortInv' }
   | { t: 'sortChest'; id: number }
   | { t: 'openChest'; id: number }

@@ -141,10 +141,21 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   renderer.onPlace = (x, y, item) => worker.postMessage({ t: 'place', item, x, y });
   renderer.onOpenStation = (type) => openStationCraft(type);
   renderer.onOpenChest = (id) => { worker.postMessage({ t: 'openChest', id }); openChestPanel(id, lastSlots); };
+  renderer.onBoardBoat = (id) => worker.postMessage({ t: 'board', id });
+  const sendEat = (item: string): void => worker.postMessage({ t: 'consume', item });
+  renderer.onEat = sendEat;
 
-  const sendMove = (from: import('./shared/protocol').InvAddr, to: import('./shared/protocol').InvAddr): void => worker.postMessage({ t: 'move', from, to });
-  initPanel({ onMove: sendMove, onSort: () => worker.postMessage({ t: 'sortInv' }) });
-  initChest({ onMove: sendMove, onSortInv: () => worker.postMessage({ t: 'sortInv' }), onSortChest: (id) => worker.postMessage({ t: 'sortChest', id }) });
+  type Addr = import('./shared/protocol').InvAddr;
+  const sendMove = (from: Addr, to: Addr): void => worker.postMessage({ t: 'move', from, to });
+  initPanel({ onMove: sendMove, onSort: () => worker.postMessage({ t: 'sortInv' }), onEat: sendEat });
+  initChest({
+    onMove: sendMove,
+    onSortInv: () => worker.postMessage({ t: 'sortInv' }),
+    onSortChest: (id) => worker.postMessage({ t: 'sortChest', id }),
+    onQuick: (from, id) => worker.postMessage({ t: 'quickMove', from, id }),
+    onMoveAmount: (from, id, amount) => worker.postMessage({ t: 'moveAmount', from, id, amount }),
+    onEat: sendEat,
+  });
 
   initHotbar((sel: HotbarSel) => {
     renderer.selected = sel;
@@ -177,7 +188,6 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
       case 'map': toggleBigMap(); break;
       case 'jump': renderer.jump(); break;
       case 'cave': worker.postMessage({ t: 'toggleCave' }); break;
-      case 'eat': worker.postMessage({ t: 'consume' }); break;
       case 'drink': worker.postMessage({ t: 'drink' }); break;
       case 'save': requestSave(); break;
       case 'music': toggleMusic(); break;

@@ -1,9 +1,9 @@
 // Punto de entrada del Web Worker. Espera 'init' antes de arrancar.
 
 import {
-  createSim, createSimFromSave, serializeSim, stepSim, consume, drink, craft, place,
+  createSim, createSimFromSave, serializeSim, stepSim, consume, drink, craft, place, board,
   timeInfo, animalSnaps, invSlots, playerPos, onWaterOf, toggleCave, onEntranceOf, bestFood,
-  moveItem, sortInv, sortChest, chestItems,
+  moveItem, quickMove, moveAmount, sortInv, sortChest, chestItems,
 } from './world';
 import type { Sim, StepResult } from './world';
 import { WORLD_SEED, TICK_MS } from '../shared/constants';
@@ -35,7 +35,7 @@ function startLoop(): void {
     const snap: Snapshot = {
       tick: sim.tick, px: p.x, py: p.y, onWater: onWaterOf(sim),
       animals: animalSnaps(sim), stats: sim.stats, time: timeInfo(sim),
-      loc: sim.location, caveSeed: sim.caveSeed, onEntrance: onEntranceOf(sim),
+      loc: sim.location, caveSeed: sim.caveSeed, onEntrance: onEntranceOf(sim), riding: sim.riding,
     };
     post({ t: 'snapshot', snap });
     for (const h of r.harvestEvents) post({ t: 'harvest', x: h.x, y: h.y, depleted: h.depleted });
@@ -78,6 +78,12 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     moveItem(sim, m.from, m.to);
     postInv();
     for (const a of [m.from, m.to] as InvAddr[]) if (a.c === 'chest') postChest(a.id);
+  } else if (m.t === 'quickMove') {
+    quickMove(sim, m.from, m.id);
+    postInv(); postChest(m.id);
+  } else if (m.t === 'moveAmount') {
+    moveAmount(sim, m.from, m.id, m.amount);
+    postInv(); postChest(m.id);
   } else if (m.t === 'sortInv') {
     sortInv(sim); postInv();
   } else if (m.t === 'sortChest') {
@@ -88,5 +94,9 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false };
     toggleCave(sim, res);
     for (const f of res.floaters) post({ t: 'floater', ...f });
+  } else if (m.t === 'board') {
+    const r = board(sim, m.id);
+    post({ t: 'structures', structures: sim.structures });
+    if (r.floater) post({ t: 'floater', ...r.floater });
   } else if (m.t === 'requestSave') post({ t: 'save', state: serializeSim(sim) });
 };

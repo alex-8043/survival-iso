@@ -12,54 +12,88 @@ export const TERRAIN = {
   ROCK: 5,
   MOUNTAIN: 6,
   SNOW: 7,
+  DESERT: 8,
+  JUNGLE: 9,
+  SWAMP: 10,
 } as const;
 
 export type Terrain = number;
 
 const SCALE = 0.045;
+export const MAX_BLOCK = 16; // altura máxima en bloques (para bucles/render)
 
 export interface TileInfo {
   terrain: Terrain;
-  elevation: number; // 0..1 (relieve visual)
-  passable: boolean; // tierra caminable (para spawns de animales)
+  level: number; // altura en bloques (entero); 0 = nivel del mar / agua
+  water: boolean;
+  elevation: number; // = level (compat)
+  passable: boolean; // tierra caminable (para spawns)
 }
 
 export function heightAt(x: number, y: number, seed: number): number {
   return fbm(x * SCALE, y * SCALE, seed, 5);
 }
-
 export function moistureAt(x: number, y: number, seed: number): number {
   return fbm((x + 1000) * SCALE * 1.7, (y - 1000) * SCALE * 1.7, seed ^ 0x1234, 3);
+}
+export function temperatureAt(x: number, y: number, seed: number): number {
+  return fbm((x - 2000) * SCALE * 1.3, (y + 2000) * SCALE * 1.3, seed ^ 0x77aa, 3);
 }
 
 export function tileAt(x: number, y: number, seed: number): TileInfo {
   const h = heightAt(x, y, seed);
+  if (h < 0.34) {
+    return { terrain: h < 0.29 ? TERRAIN.DEEP_WATER : TERRAIN.WATER, level: 0, water: true, elevation: 0, passable: false };
+  }
   const m = moistureAt(x, y, seed);
+  const t = temperatureAt(x, y, seed);
   let terrain: Terrain;
-  if (h < 0.32) terrain = TERRAIN.DEEP_WATER;
-  else if (h < 0.38) terrain = TERRAIN.WATER;
-  else if (h < 0.43) terrain = TERRAIN.SAND;
-  else if (h < 0.6) terrain = m > 0.5 ? TERRAIN.FOREST : TERRAIN.GRASS;
-  else if (h < 0.72) terrain = m > 0.58 ? TERRAIN.GRASS : TERRAIN.ROCK;
-  else if (h < 0.83) terrain = TERRAIN.MOUNTAIN;
-  else terrain = TERRAIN.SNOW;
+  let level: number;
+  if (h < 0.38) {
+    terrain = TERRAIN.SAND; level = 1; // playa
+  } else if (h > 0.7) {
+    // Montaña: muy alta y escarpada (curva pronunciada -> acantilados frecuentes).
+    const mh = Math.min(1, (h - 0.7) / 0.3);
+    level = 3 + Math.floor(Math.pow(mh, 1.5) * 13); // 3..16
+    terrain = h > 0.86 ? TERRAIN.SNOW : (m > 0.5 ? TERRAIN.MOUNTAIN : TERRAIN.ROCK);
+  } else {
+    const land = (h - 0.38) / 0.32; // 0..1
+    level = 1 + Math.floor(land * 2.99); // 1..3
+    if (t > 0.62 && m < 0.42) { terrain = TERRAIN.DESERT; level = 1 + Math.floor(land * 1.6); }
+    else if (t > 0.6 && m > 0.56) terrain = TERRAIN.JUNGLE;
+    else if (h < 0.5 && m > 0.58) { terrain = TERRAIN.SWAMP; level = 1; }
+    else if (m > 0.52) terrain = TERRAIN.FOREST;
+    else terrain = TERRAIN.GRASS;
+  }
+  return { terrain, level, water: false, elevation: level, passable: true };
+}
 
-  // relieve: llanuras planas, montañas mucho más marcadas (curva)
-  const e0 = h < 0.38 ? 0 : Math.min(1, (h - 0.38) / 0.5);
-  const elevation = Math.pow(e0, 1.35);
-  const passable =
-    terrain !== TERRAIN.DEEP_WATER && terrain !== TERRAIN.WATER && terrain !== TERRAIN.SNOW;
-  return { terrain, elevation, passable };
+export function levelAt(x: number, y: number, seed: number): number {
+  return tileAt(x, y, seed).level;
 }
 
 export type NodeKind = 'tree' | 'rock' | 'coal' | 'iron';
 
 export function nodeAt(x: number, y: number, seed: number): NodeKind | null {
-  const t = tileAt(x, y, seed);
+  const t = tileAt(x, y, seed).terrain;
   const r = hash2(x, y, (seed ^ 0x777) | 0);
-  if (t.terrain === TERRAIN.FOREST && r < 0.22) return 'tree';
-  if (t.terrain === TERRAIN.GRASS && r < 0.03) return 'tree';
-  if ((t.terrain === TERRAIN.ROCK || t.terrain === TERRAIN.MOUNTAIN) && r < 0.08) return 'rock';
+  if (t === TERRAIN.JUNGLE && r < 0.42) return 'tree';
+  if (t === TERRAIN.FOREST && r < 0.22) return 'tree';
+  if (t === TERRAIN.SWAMP && r < 0.08) return 'tree';
+  if (t === TERRAIN.GRASS && r < 0.03) return 'tree';
+  if ((t === TERRAIN.ROCK || t === TERRAIN.MOUNTAIN || t === TERRAIN.SNOW) && r < 0.08) return 'rock';
+  return null;
+}
+
+// Decoración de superficie no interactiva por bioma (cactus, juncos, matojos...).
+export type SurfaceDecor = 'cactus' | 'reed' | 'deadbush' | 'fern';
+export function surfaceDecorAt(x: number, y: number, seed: number): SurfaceDecor | null {
+  const t = tileAt(x, y, seed);
+  if (t.water || nodeAt(x, y, seed)) return null;
+  const r = hash2(x, y, (seed ^ 0x2de) | 0);
+  if (t.terrain === TERRAIN.DESERT) { if (r < 0.05) return 'cactus'; if (r < 0.09) return 'deadbush'; return null; }
+  if (t.terrain === TERRAIN.SWAMP) { if (r < 0.14) return 'reed'; return null; }
+  if (t.terrain === TERRAIN.JUNGLE) { if (r < 0.12) return 'fern'; return null; }
   return null;
 }
 
@@ -67,9 +101,9 @@ export function isWater(terrain: Terrain): boolean {
   return terrain === TERRAIN.DEEP_WATER || terrain === TERRAIN.WATER;
 }
 
-// El jugador puede entrar al agua (lento); solo la nieve/pico es intransitable.
-export function playerBlocked(terrain: Terrain): boolean {
-  return terrain === TERRAIN.SNOW;
+// Compat: ya no se bloquea por tipo de terreno (la colisión es por altura).
+export function playerBlocked(_terrain: Terrain): boolean {
+  return false;
 }
 
 // ---------------------------------------------------------------------------

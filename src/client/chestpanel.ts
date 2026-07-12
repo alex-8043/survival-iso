@@ -5,6 +5,7 @@ import { ITEMS } from '../shared/items';
 import { itemSpriteURL } from './itemsprites';
 import { INV_MAIN, INV_HOTBAR, CHEST_SIZE, type Slot } from '../shared/inventory';
 import { enableDrag, slotHtml } from './slotdrag';
+import { openSlotMenu } from './slotmenu';
 import type { InvAddr } from '../shared/protocol';
 
 let open = false;
@@ -14,9 +15,24 @@ let playerSlots: Slot[] = [];
 let onMove: (from: InvAddr, to: InvAddr) => void = () => {};
 let onSortInv: () => void = () => {};
 let onSortChest: (id: number) => void = () => {};
+let onQuick: (from: InvAddr, id: number) => void = () => {};
+let onMoveAmount: (from: InvAddr, id: number, amount: number) => void = () => {};
+let onEat: (item: string) => void = () => {};
 
-export function initChest(cb: { onMove: (from: InvAddr, to: InvAddr) => void; onSortInv: () => void; onSortChest: (id: number) => void }): void {
+export interface ChestCb {
+  onMove: (from: InvAddr, to: InvAddr) => void;
+  onSortInv: () => void;
+  onSortChest: (id: number) => void;
+  onQuick: (from: InvAddr, id: number) => void;
+  onMoveAmount: (from: InvAddr, id: number, amount: number) => void;
+  onEat: (item: string) => void;
+}
+export function initChest(cb: ChestCb): void {
   onMove = cb.onMove; onSortInv = cb.onSortInv; onSortChest = cb.onSortChest;
+  onQuick = cb.onQuick; onMoveAmount = cb.onMoveAmount; onEat = cb.onEat;
+}
+function slotAt(addr: InvAddr): Slot {
+  return addr.c === 'chest' ? chestSlots[addr.i] : playerSlots[addr.i];
 }
 export function isChestOpen(): boolean { return open; }
 export function openChestPanel(id: number, playerInv: Slot[]): void {
@@ -67,5 +83,12 @@ function render(): void {
   document.getElementById('chest-sort')?.addEventListener('click', () => onSortChest(chestId));
   document.getElementById('chest-inv-sort')?.addEventListener('click', () => onSortInv());
   const card = p.querySelector('.chest-card') as HTMLElement | null;
-  if (card) enableDrag(card, onMove);
+  if (card) enableDrag(card, onMove, {
+    onShift: (addr) => onQuick(addr, chestId),
+    onContext: (addr, x, y) => {
+      const s = slotAt(addr);
+      if (!s) return;
+      openSlotMenu(x, y, { count: s.count, canMove: true, canEat: !!ITEMS[s.id]?.food, onMove: (amt) => onMoveAmount(addr, chestId, amt), onEat: () => onEat(s.id) });
+    },
+  });
 }

@@ -26,7 +26,7 @@ export interface ItemDef {
   color: number;
   food?: number;
   tool?: { kind: ToolKind; tier: number; speed: number }; // speed = mult. de recolección
-  place?: 'block' | 'station' | 'container'; // colocable
+  place?: 'block' | 'station' | 'container' | 'boat'; // colocable
   solid?: boolean; // el bloque bloquea el paso
   boat?: boolean;
   defense?: number;
@@ -66,7 +66,7 @@ export const ITEMS: Record<string, ItemDef> = {
   forge: { id: 'forge', name: 'Herrería', color: 0x4a4a54, place: 'station', solid: true },
   chest: { id: 'chest', name: 'Cofre', color: 0x8a5a2b, place: 'container', solid: true },
 
-  boat: { id: 'boat', name: 'Barca', color: 0x8a5a2b, boat: true },
+  boat: { id: 'boat', name: 'Barca', color: 0x8a5a2b, boat: true, place: 'boat' },
 };
 
 export interface NodeKindDef {
