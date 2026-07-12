@@ -57,9 +57,9 @@ export type NodeKind = 'tree' | 'rock' | 'coal' | 'iron';
 export function nodeAt(x: number, y: number, seed: number): NodeKind | null {
   const t = tileAt(x, y, seed);
   const r = hash2(x, y, (seed ^ 0x777) | 0);
-  if (t.terrain === TERRAIN.FOREST && r < 0.4) return 'tree';
-  if (t.terrain === TERRAIN.GRASS && r < 0.07) return 'tree';
-  if ((t.terrain === TERRAIN.ROCK || t.terrain === TERRAIN.MOUNTAIN) && r < 0.16) return 'rock';
+  if (t.terrain === TERRAIN.FOREST && r < 0.22) return 'tree';
+  if (t.terrain === TERRAIN.GRASS && r < 0.03) return 'tree';
+  if ((t.terrain === TERRAIN.ROCK || t.terrain === TERRAIN.MOUNTAIN) && r < 0.08) return 'rock';
   return null;
 }
 
@@ -77,13 +77,13 @@ export function playerBlocked(terrain: Terrain): boolean {
 // El interior es una sala acotada, determinista a partir de la semilla de cueva.
 // ---------------------------------------------------------------------------
 
-export const CAVE_R = 11; // radio de la sala (tiles)
+export const CAVE_R = 26; // radio de la sala (tiles) — cuevas amplias
 
-// Hay una entrada de cueva en ciertos tiles de montaña o roca.
+// Hay una entrada de cueva en ciertos tiles de montaña o roca (raras).
 export function caveEntranceAt(x: number, y: number, seed: number): boolean {
   const t = tileAt(x, y, seed).terrain;
   if (t !== TERRAIN.MOUNTAIN && t !== TERRAIN.ROCK) return false;
-  return hash2(x, y, (seed ^ 0x5eed) | 0) < 0.05;
+  return hash2(x, y, (seed ^ 0x5eed) | 0) < 0.016;
 }
 
 // Semilla determinista de la cueva a partir de las coordenadas de su entrada.
@@ -96,11 +96,13 @@ export interface CaveTile { terrain: Terrain; elevation: number; passable: boole
 // Interior de cueva: suelo transitable con muros/pilares dispersos. El centro
 // (cerca de 0,0) siempre es suelo: ahí está la salida.
 export function caveTile(x: number, y: number, cseed: number): CaveTile {
-  const d = Math.max(Math.abs(x), Math.abs(y));
-  let wall = d >= CAVE_R;
-  if (!wall && d > 2) {
-    const n = fbm((x + 40) * 0.16, (y - 40) * 0.16, cseed, 3);
-    if (n > 0.63) wall = true;
+  const d = Math.hypot(x, y);
+  // borde irregular (no un círculo perfecto)
+  const edge = CAVE_R + fbm((x + 12) * 0.09, (y - 12) * 0.09, (cseed ^ 0x99) | 0, 2) * 8 - 4;
+  let wall = d >= edge;
+  if (!wall && d > 3) {
+    const n = fbm((x + 40) * 0.14, (y - 40) * 0.14, cseed, 3);
+    if (n > 0.72) wall = true; // pilares dispersos
   }
   return { terrain: wall ? 1 : 0, elevation: wall ? 0.5 : 0, passable: !wall, wall };
 }
@@ -110,8 +112,25 @@ export function caveNodeAt(x: number, y: number, cseed: number): NodeKind | null
   if (!caveTile(x, y, cseed).passable) return null;
   if (Math.abs(x) <= 1 && Math.abs(y) <= 1) return null; // salida despejada
   const r = hash2(x, y, (cseed ^ 0x1f7) | 0);
-  if (r < 0.1) return 'iron';
-  if (r < 0.24) return 'coal';
-  if (r < 0.44) return 'rock';
+  if (r < 0.05) return 'iron';
+  if (r < 0.14) return 'coal';
+  if (r < 0.3) return 'rock';
   return null;
+}
+
+export type CaveDecor = 'stalagmite' | 'crystal' | 'mushroom' | 'bones' | 'rubble';
+
+// Decoración no interactiva del suelo de la cueva.
+export function caveDecorAt(x: number, y: number, cseed: number): CaveDecor | null {
+  if (!caveTile(x, y, cseed).passable) return null;
+  if (Math.abs(x) <= 2 && Math.abs(y) <= 2) return null;
+  if (caveNodeAt(x, y, cseed)) return null;
+  const r = hash2(x, y, (cseed ^ 0x2ac) | 0);
+  if (r > 0.14) return null;
+  const s = hash2(x + 7, y - 3, (cseed ^ 0x51) | 0);
+  if (s < 0.34) return 'stalagmite';
+  if (s < 0.56) return 'crystal';
+  if (s < 0.76) return 'mushroom';
+  if (s < 0.9) return 'rubble';
+  return 'bones';
 }

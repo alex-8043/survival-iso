@@ -15,15 +15,16 @@ import {
   STAMINA_REGEN,
   HEALTH_REGEN,
   ANIMAL_CAP,
-  ANIMAL_SPEED,
-  ANIMAL_HEALTH,
   SPAWN_RADIUS,
+  ANIMAL_SPAWN_S,
+  CAVE_MOB_CAP,
+  CAVE_MOB_SPAWN_S,
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, CAVE_R } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
-import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, ITEMS, toolFor } from '../shared/items';
+import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor } from '../shared/items';
 import type { AnimalType } from '../shared/items';
 import { recipeById } from '../shared/recipes';
 import type { InputState, InteractTarget, Stats, AnimalSnap, TimeInfo, InvEntry, SaveState, Structure, Location } from '../shared/protocol';
@@ -31,7 +32,7 @@ import type { InputState, InteractTarget, Stats, AnimalSnap, TimeInfo, InvEntry,
 export const Position = defineComponent({ x: Types.f32, y: Types.f32 });
 
 export interface Animal {
-  id: number; type: AnimalType; x: number; y: number; tx: number; ty: number; wait: number; health: number; alive: boolean;
+  id: number; type: AnimalType; x: number; y: number; tx: number; ty: number; wait: number; health: number; alive: boolean; layer: Location;
 }
 export interface Floater { text: string; color: number; x: number; y: number; }
 
@@ -51,6 +52,7 @@ export interface Sim {
   animals: Animal[];
   nextAnimalId: number;
   spawnTimer: number;
+  caveMobTimer: number;
   inventory: Record<string, number>;
   stats: Stats;
   timeS: number;
@@ -96,7 +98,7 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     interactActive: false, interactTarget: null, activeTool: null,
     harvestTimer: 0, harvested: new Map(), depleted: new Set(),
     structures: [], nextStructId: 1,
-    animals: [], nextAnimalId: 1, spawnTimer: 0,
+    animals: [], nextAnimalId: 1, spawnTimer: 0, caveMobTimer: 0,
     inventory: {}, stats: { health: 100, food: 100, thirst: 100, stamina: 100 },
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
     location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null,
@@ -105,7 +107,7 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
 
 export function createSim(seed: number): Sim {
   const sim = baseSim(seed, findSpawn(seed));
-  for (let i = 0; i < 8; i++) trySpawnAnimal(sim);
+  for (let i = 0; i < 4; i++) trySpawnAnimal(sim);
   return sim;
 }
 
@@ -122,7 +124,7 @@ export function createSimFromSave(save: SaveState): Sim {
   sim.caveSeed = save.caveSeed ?? 0;
   sim.surfaceReturn = save.surfaceReturn ?? null;
   sim.caveEntrance = save.caveEntrance ?? null;
-  for (let i = 0; i < 8; i++) trySpawnAnimal(sim);
+  if (sim.location === 'surface') for (let i = 0; i < 4; i++) trySpawnAnimal(sim);
   return sim;
 }
 
@@ -173,8 +175,14 @@ function blockedAt(sim: Sim, x: number, y: number): boolean {
   return !!(s && ITEMS[s.type]?.solid);
 }
 
+function layerCount(sim: Sim, layer: Location): number {
+  let n = 0;
+  for (const a of sim.animals) if (a.layer === layer) n++;
+  return n;
+}
+
 function trySpawnAnimal(sim: Sim): void {
-  if (sim.animals.length >= ANIMAL_CAP) return;
+  if (layerCount(sim, 'surface') >= ANIMAL_CAP) return;
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
   for (let a = 0; a < 12; a++) {
@@ -185,7 +193,24 @@ function trySpawnAnimal(sim: Sim): void {
     const t = tileAt(x, y, sim.seed);
     if (!t.passable || isWater(t.terrain)) continue;
     const type = ANIMAL_TYPES[Math.floor(hash2(x, y, (sim.seed ^ 0xabc) | 0) * ANIMAL_TYPES.length)];
-    sim.animals.push({ id: sim.nextAnimalId++, type, x, y, tx: x, ty: y, wait: hash2(x, y, 7) * 2, health: ANIMAL_HEALTH, alive: true });
+    sim.animals.push({ id: sim.nextAnimalId++, type, x, y, tx: x, ty: y, wait: hash2(x, y, 7) * 2, health: ANIMAL_INFO[type].health, alive: true, layer: 'surface' });
+    return;
+  }
+}
+
+function trySpawnCaveMob(sim: Sim): void {
+  if (layerCount(sim, 'cave') >= CAVE_MOB_CAP) return;
+  if (hash2(sim.tick, 3, (sim.caveSeed ^ 0x1) | 0) > 0.45) return; // aparición esporádica
+  const px = Position.x[sim.playerId];
+  const py = Position.y[sim.playerId];
+  for (let a = 0; a < 16; a++) {
+    const ang = hash2(sim.nextAnimalId * 5 + a, sim.tick + a * 3, sim.caveSeed) * Math.PI * 2;
+    const dist = 6 + hash2(a, sim.nextAnimalId, sim.caveSeed) * (CAVE_R - 9);
+    const x = Math.round(px + Math.cos(ang) * dist);
+    const y = Math.round(py + Math.sin(ang) * dist);
+    if (!caveTile(x, y, sim.caveSeed).passable || caveNodeAt(x, y, sim.caveSeed)) continue;
+    const type = CAVE_MOBS[Math.floor(hash2(x, y, (sim.caveSeed ^ 0xbad) | 0) * CAVE_MOBS.length)];
+    sim.animals.push({ id: sim.nextAnimalId++, type, x, y, tx: x, ty: y, wait: hash2(x, y, 5) * 1.5, health: ANIMAL_INFO[type].health, alive: true, layer: 'cave' });
     return;
   }
 }
@@ -239,10 +264,13 @@ export function stepSim(sim: Sim, dt: number): StepResult {
     } else sim.harvestTimer -= dt;
   } else sim.harvestTimer = 0;
 
-  if (sim.location !== 'cave') {
-    updateAnimals(sim, dt);
+  updateAnimals(sim, dt);
+  if (sim.location === 'cave') {
+    sim.caveMobTimer -= dt;
+    if (sim.caveMobTimer <= 0) { sim.caveMobTimer = CAVE_MOB_SPAWN_S; despawnFar(sim); trySpawnCaveMob(sim); }
+  } else {
     sim.spawnTimer -= dt;
-    if (sim.spawnTimer <= 0) { sim.spawnTimer = 1.5; despawnFar(sim); trySpawnAnimal(sim); }
+    if (sim.spawnTimer <= 0) { sim.spawnTimer = ANIMAL_SPAWN_S; despawnFar(sim); trySpawnAnimal(sim); }
   }
 
   sim.tick++;
@@ -264,6 +292,8 @@ export function toggleCave(sim: Sim, res: StepResult): void {
     sim.location = 'cave';
     Position.x[sim.playerId] = 0;
     Position.y[sim.playerId] = 0;
+    sim.animals = sim.animals.filter((a) => a.layer === 'surface');
+    sim.caveMobTimer = 2;
     sim.interactActive = false; sim.interactTarget = null; sim.harvestTimer = 0;
     res.floaters.push({ text: 'Entras a la cueva', color: 0xd8c48a, x: 0, y: 0 });
   } else {
@@ -275,6 +305,7 @@ export function toggleCave(sim: Sim, res: StepResult): void {
     sim.location = 'surface';
     Position.x[sim.playerId] = back.x;
     Position.y[sim.playerId] = back.y;
+    sim.animals = sim.animals.filter((a) => a.layer === 'surface');
     sim.interactActive = false; sim.interactTarget = null; sim.harvestTimer = 0;
     res.floaters.push({ text: 'Sales a la superficie', color: 0x9edb8a, x: back.x, y: back.y });
   }
@@ -303,7 +334,6 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
     const depleted = amt <= 0;
     if (depleted) sim.depleted.add(k);
     res.harvestEvents.push({ x: tgt.x, y: tgt.y, depleted });
-    res.floaters.push({ text: '+1', color: ITEMS[item].color, x: tgt.x, y: tgt.y });
     const fast = tool && ((kind === 'tree' && tool.kind === 'axe') || (kind !== 'tree' && tool.kind === 'pickaxe'));
     return fast ? HARVEST_COOLDOWN / tool!.speed : HARVEST_COOLDOWN;
   }
@@ -322,8 +352,7 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
     for (const drop of ANIMAL_DROPS[an.type]) {
       const span = drop.max - drop.min + 1;
       const n = drop.min + Math.floor(hash2(an.id, drop.min, sim.seed) * span);
-      addItem(sim, drop.item, n);
-      res.floaters.push({ text: '+' + n + ' ' + ITEMS[drop.item].name, color: ITEMS[drop.item].color, x: an.x, y: an.y });
+      if (n > 0) addItem(sim, drop.item, n);
     }
     res.inventoryChanged = true;
   } else {
@@ -334,20 +363,24 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
 
 function updateAnimals(sim: Sim, dt: number): void {
   for (const a of sim.animals) {
-    if (!a.alive) continue;
+    if (!a.alive || a.layer !== sim.location) continue; // sólo la capa activa se mueve
+    const rng = a.type === 'bat' ? 9 : 6;
     a.wait -= dt;
     if (a.wait <= 0 && Math.abs(a.x - a.tx) < 0.2 && Math.abs(a.y - a.ty) < 0.2) {
-      a.wait = 1 + hash2(a.id, sim.tick, sim.seed) * 3;
-      a.tx = a.x + (hash2(a.id, sim.tick + 1, sim.seed) - 0.5) * 6;
-      a.ty = a.y + (hash2(a.id, sim.tick + 2, sim.seed) - 0.5) * 6;
+      a.wait = (a.type === 'bat' ? 0.4 : 1) + hash2(a.id, sim.tick, sim.seed) * 3;
+      a.tx = a.x + (hash2(a.id, sim.tick + 1, sim.seed) - 0.5) * rng;
+      a.ty = a.y + (hash2(a.id, sim.tick + 2, sim.seed) - 0.5) * rng;
     }
     const dx = a.tx - a.x, dy = a.ty - a.y;
     const d = Math.hypot(dx, dy);
     if (d > 0.1) {
-      const step = Math.min(d, ANIMAL_SPEED * dt);
+      const step = Math.min(d, ANIMAL_INFO[a.type].speed * dt);
       const nx = a.x + (dx / d) * step;
       const ny = a.y + (dy / d) * step;
-      if (tileAt(Math.round(nx), Math.round(ny), sim.seed).passable) { a.x = nx; a.y = ny; }
+      const passable = a.layer === 'cave'
+        ? caveTile(Math.round(nx), Math.round(ny), sim.caveSeed).passable
+        : tileAt(Math.round(nx), Math.round(ny), sim.seed).passable;
+      if (passable) { a.x = nx; a.y = ny; }
       else { a.tx = a.x; a.ty = a.y; }
     }
   }
@@ -357,7 +390,7 @@ function updateAnimals(sim: Sim, dt: number): void {
 function despawnFar(sim: Sim): void {
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
-  sim.animals = sim.animals.filter((a) => Math.hypot(a.x - px, a.y - py) < SPAWN_RADIUS * 1.7);
+  sim.animals = sim.animals.filter((a) => a.layer !== sim.location || Math.hypot(a.x - px, a.y - py) < SPAWN_RADIUS * 1.7);
 }
 
 function hasStationNear(sim: Sim, type: string): boolean {
@@ -379,7 +412,7 @@ export function craft(sim: Sim, id: string): { ok: boolean; floater?: Floater } 
   }
   for (const k of Object.keys(r.ingredients)) sim.inventory[k] -= r.ingredients[k];
   addItem(sim, r.out.item, r.out.count);
-  return { ok: true, floater: { text: '+' + r.out.count + ' ' + ITEMS[r.out.item].name, color: ITEMS[r.out.item].color, x: px, y: py } };
+  return { ok: true };
 }
 
 export function place(sim: Sim, item: string, x: number, y: number): { ok: boolean; floater?: Floater } {
@@ -422,8 +455,7 @@ export function timeInfo(sim: Sim): TimeInfo {
   return { day: Math.floor(sim.timeS / DAY_LENGTH_S) + 1, tod: (sim.timeS % DAY_LENGTH_S) / DAY_LENGTH_S };
 }
 export function animalSnaps(sim: Sim): AnimalSnap[] {
-  if (sim.location === 'cave') return [];
-  return sim.animals.map((a) => ({ id: a.id, type: a.type, x: a.x, y: a.y, alive: a.alive }));
+  return sim.animals.filter((a) => a.layer === sim.location).map((a) => ({ id: a.id, type: a.type, x: a.x, y: a.y, alive: a.alive }));
 }
 export function invEntries(inv: Record<string, number>): InvEntry[] {
   return Object.keys(inv).filter((k) => inv[k] > 0).map((k) => ({ id: k, count: inv[k] }));

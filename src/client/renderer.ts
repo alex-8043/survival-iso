@@ -4,9 +4,10 @@
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
 import { TILE_W, TILE_H, MAX_ELEV_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
-import { tileAt, nodeAt, isWater, playerBlocked, TERRAIN, caveTile, caveNodeAt, caveEntranceAt } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, playerBlocked, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt } from '../shared/worldgen';
 import { avatarCanvas, type AvatarAction, type Customization, type HeldTool } from './avatar';
 import { ITEMS } from '../shared/items';
+import { getCode, keyLabel } from './keybinds';
 import type { InteractTarget, Snapshot, Structure, Location } from '../shared/protocol';
 import type { AnimalType } from '../shared/items';
 import type { HotbarSel } from './hotbar';
@@ -40,10 +41,12 @@ export class GameRenderer {
   readonly darkness = new Graphics();
 
   readonly nodes = new Map<string, RenderNode>();
+  readonly decor = new Map<string, Container>();
   readonly animals = new Map<number, RenderAnimal>();
   readonly structs = new Map<number, Container>();
   readonly floats: FloatText[] = [];
   readonly depleted = new Set<string>();
+  jumpOff = 0; jumpVel = 0;
 
   seed = 0;
   player: Sprite | null = null;
@@ -161,8 +164,13 @@ export class GameRenderer {
     this.loc = loc;
     this.caveSeed = caveSeed;
     for (const [key, rn] of this.nodes) { this.entities.removeChild(rn.sprite); rn.sprite.destroy(); this.nodes.delete(key); }
+    for (const [key, sp] of this.decor) { this.entities.removeChild(sp); sp.destroy(); this.decor.delete(key); }
     for (const sp of this.structs.values()) sp.visible = loc === 'surface';
     this.ptile = '';
+  }
+
+  jump(): void {
+    if (this.jumpOff <= 0.01 && this.jumpVel === 0) this.jumpVel = 235;
   }
 
   // --- Consultas de mundo según la capa activa (superficie o cueva) ---
@@ -244,6 +252,53 @@ export class GameRenderer {
       }
     }
     for (const [key, rn] of this.nodes) if (!want.has(key)) { this.entities.removeChild(rn.sprite); rn.sprite.destroy(); this.nodes.delete(key); }
+
+    // Decoración de cueva (no interactiva)
+    if (this.loc === 'cave') {
+      const wantD = new Set<string>();
+      for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+        const x = ptx + dx, y = pty + dy;
+        const kind = caveDecorAt(x, y, this.caveSeed);
+        if (!kind) continue;
+        const key = 'd' + x + ',' + y;
+        wantD.add(key);
+        if (!this.decor.has(key)) {
+          const sprite = this.makeDecor(kind);
+          const s = gridToScreen(x, y);
+          sprite.x = s.x; sprite.y = s.y; sprite.zIndex = depthOf(x, y) - 0.05;
+          this.entities.addChild(sprite);
+          this.decor.set(key, sprite);
+        }
+      }
+      for (const [key, sp] of this.decor) if (!wantD.has(key)) { this.entities.removeChild(sp); sp.destroy(); this.decor.delete(key); }
+    }
+  }
+
+  private makeDecor(kind: string): Container {
+    const c = new Graphics();
+    if (kind === 'stalagmite') {
+      c.poly([-4, 0, 4, 0, 1.4, -18, -1.4, -18]).fill({ color: 0x4c4c58 });
+      c.poly([-4, 0, 0, 0, -1, -16, -2.5, -12]).fill({ color: 0x5c5c68 });
+    } else if (kind === 'crystal') {
+      c.poly([-2, 0, 2, 0, 3, -6, 0, -14, -3, -6]).fill({ color: 0x5ad0e0 });
+      c.poly([2, 0, 6, -1, 6, -8, 3, -9]).fill({ color: 0x3aa6c4 });
+      c.poly([-2, 0, -6, -1, -5, -6, -2, -7]).fill({ color: 0x49b8cc });
+    } else if (kind === 'mushroom') {
+      c.rect(-1.4, -6, 2.8, 6).fill({ color: 0xe6ddc8 });
+      c.ellipse(0, -6, 6, 4).fill({ color: 0xb5462f });
+      c.circle(-2, -7, 1).fill({ color: 0xf0e6d0 });
+      c.circle(2.5, -6, 0.9).fill({ color: 0xf0e6d0 });
+    } else if (kind === 'bones') {
+      c.rect(-6, -1, 12, 2).fill({ color: 0xd9d2c2 });
+      c.circle(-6, 0, 2).fill({ color: 0xd9d2c2 });
+      c.circle(6, 0, 2).fill({ color: 0xd9d2c2 });
+      c.rect(-2, -5, 2, 10).fill({ color: 0xc7c0b0 });
+    } else {
+      c.ellipse(-3, 0, 4, 2.4).fill({ color: 0x55555f });
+      c.ellipse(3, -1, 3, 2).fill({ color: 0x484852 });
+      c.circle(0, -1, 2).fill({ color: 0x606069 });
+    }
+    return c;
   }
 
   private viewRadius(): number {
@@ -360,6 +415,20 @@ export class GameRenderer {
 
   private makeAnimal(type: AnimalType): Container {
     const g = new Graphics();
+    if (type === 'bat') {
+      g.ellipse(0, -1, 5, 2).fill({ color: 0x000000, alpha: 0.18 });
+      const by = -17;
+      g.poly([-12, by - 4, -3, by, -10, by + 4]).fill({ color: 0x352c3e });
+      g.poly([12, by - 4, 3, by, 10, by + 4]).fill({ color: 0x352c3e });
+      g.ellipse(-6, by, 4.5, 2.6).fill({ color: 0x2a2431 });
+      g.ellipse(6, by, 4.5, 2.6).fill({ color: 0x2a2431 });
+      g.circle(0, by, 3).fill({ color: 0x1f1a26 });
+      g.poly([-2.4, by - 2.5, -1, by - 6, 0, by - 2.5]).fill({ color: 0x1f1a26 });
+      g.poly([2.4, by - 2.5, 1, by - 6, 0, by - 2.5]).fill({ color: 0x1f1a26 });
+      g.circle(-1, by - 0.5, 0.7).fill({ color: 0xe0655a });
+      g.circle(1, by - 0.5, 0.7).fill({ color: 0xe0655a });
+      return g;
+    }
     g.ellipse(0, -1, 14, 5).fill({ color: 0x000000, alpha: 0.2 });
     if (type === 'cow') {
       for (const lx of [-8, -3, 4, 9]) g.rect(lx, -6, 2.6, 6).fill({ color: 0x2b2620 });
@@ -414,7 +483,12 @@ export class GameRenderer {
 
     const ps = gridToScreen(this.prx, this.pry);
     const py = ps.y - this.elevAtL(this.prx, this.pry) * MAX_ELEV_PX;
-    this.player.x = ps.x; this.player.y = py; this.player.zIndex = depthOf(this.prx, this.pry) + 0.3;
+    if (this.jumpVel !== 0 || this.jumpOff > 0) {
+      this.jumpOff += this.jumpVel * dt;
+      this.jumpVel -= 900 * dt;
+      if (this.jumpOff <= 0) { this.jumpOff = 0; this.jumpVel = 0; }
+    }
+    this.player.x = ps.x; this.player.y = py - this.jumpOff; this.player.zIndex = depthOf(this.prx, this.pry) + 0.3;
     this.world.x = this.app.screen.width / 2 - ps.x;
     this.world.y = this.app.screen.height / 2 - py;
 
@@ -561,7 +635,8 @@ export class GameRenderer {
     let el = document.getElementById('cave-hint');
     if (!on) { if (el) el.style.display = 'none'; return; }
     if (!el) { el = document.createElement('div'); el.id = 'cave-hint'; document.body.appendChild(el); }
-    el.textContent = this.loc === 'cave' ? 'Pulsa E para salir de la cueva' : 'Pulsa E para entrar a la cueva';
+    const k = keyLabel(getCode('cave'));
+    el.textContent = this.loc === 'cave' ? `Pulsa ${k} para salir de la cueva` : `Pulsa ${k} para entrar a la cueva`;
     el.style.display = 'block';
   }
 }

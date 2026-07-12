@@ -3,8 +3,20 @@
 
 import type { NodeKind } from './worldgen';
 
-export type AnimalType = 'cow' | 'pig' | 'chicken' | 'sheep';
+export type AnimalType = 'cow' | 'pig' | 'chicken' | 'sheep' | 'bat';
+// Animales de superficie (los que aparecen al aire libre).
 export const ANIMAL_TYPES: AnimalType[] = ['cow', 'pig', 'chicken', 'sheep'];
+// Mobs que sólo aparecen dentro de cuevas.
+export const CAVE_MOBS: AnimalType[] = ['bat'];
+
+export interface AnimalInfo { health: number; speed: number; }
+export const ANIMAL_INFO: Record<AnimalType, AnimalInfo> = {
+  cow: { health: 3, speed: 1.3 },
+  pig: { health: 3, speed: 1.5 },
+  chicken: { health: 2, speed: 1.8 },
+  sheep: { health: 3, speed: 1.3 },
+  bat: { health: 2, speed: 2.6 },
+};
 
 export type ToolKind = 'axe' | 'pickaxe' | 'sword';
 
@@ -87,6 +99,7 @@ export const ANIMAL_DROPS: Record<AnimalType, DropDef[]> = {
     { item: 'meat', min: 1, max: 2 },
     { item: 'wool', min: 1, max: 2 },
   ],
+  bat: [{ item: 'leather', min: 0, max: 1 }],
 };
 
 export function toolFor(item: string | null): ItemDef['tool'] | undefined {

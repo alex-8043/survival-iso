@@ -1,40 +1,72 @@
-// HUD: barras de supervivencia (vida/comida/sed/estamina) y reloj día/hora.
+// HUD: iconos de supervivencia abajo (vida=corazones, hambre=muslitos,
+// estamina=rayo, sed=gotas), reloj día/hora y feed de recolección a la izquierda.
 
 import type { Stats, TimeInfo } from '../shared/protocol';
 
-const BARS = [
-  { key: 'health', label: 'Vida', color: '#e5484d' },
-  { key: 'food', label: 'Comida', color: '#e8a13a' },
-  { key: 'thirst', label: 'Sed', color: '#3aa0e8' },
-  { key: 'stamina', label: 'Estamina', color: '#4cc85a' },
-] as const;
+const ICONS = 10; // iconos por estadística
+
+function uri(inner: string): string {
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'>${inner}</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+const HEART = `<path d='M10 16.6C4 12 4.4 6.2 8 6.2C9.5 6.2 10 7.7 10 7.7C10 7.7 10.5 6.2 12 6.2C15.6 6.2 16 12 10 16.6Z' fill='@'/>`;
+const DROP = `<path d='M10 3.2C10 3.2 15.3 10.4 15.3 13.4A5.3 5.3 0 1 1 4.7 13.4C4.7 10.4 10 3.2 10 3.2Z' fill='@'/>`;
+const BOLT = `<path d='M11.5 2L4.5 11.2H8.6L7.4 18L15.2 8.4H10.6L11.5 2Z' fill='@'/>`;
+function drum(meat: string, bone: string): string {
+  return `<path d='M9 9L15.6 15.6' stroke='${bone}' stroke-width='3.4' stroke-linecap='round'/><circle cx='16' cy='16' r='2.3' fill='${bone}'/><circle cx='7.4' cy='7.4' r='5' fill='${meat}'/><circle cx='5.8' cy='5.8' r='1.5' fill='${meat === '#c9743a' ? '#dd9560' : meat}'/>`;
+}
+
+interface StatIcon { key: keyof Stats; on: string; off: string; }
+const STATS: StatIcon[] = [
+  { key: 'health', on: uri(HEART.replace('@', '#e5484d')), off: uri(HEART.replace('@', '#45272a')) },
+  { key: 'food', on: uri(drum('#c9743a', '#f0e6cc')), off: uri(drum('#3f3229', '#4a4438')) },
+  { key: 'stamina', on: uri(BOLT.replace('@', '#3f86e0')), off: uri(BOLT.replace('@', '#26344a')) },
+  { key: 'thirst', on: uri(DROP.replace('@', '#3aa0e8')), off: uri(DROP.replace('@', '#223a49')) },
+];
+
+const iconEls: Partial<Record<keyof Stats, HTMLElement[]>> = {};
 
 export function initHud(): void {
-  if (document.getElementById('hud-stats')) return;
-
-  const stats = document.createElement('div');
-  stats.id = 'hud-stats';
-  stats.innerHTML = BARS.map(
-    (b) =>
-      `<div class="stat"><span class="stat-label">${b.label}</span>` +
-      `<div class="stat-track"><div class="stat-fill" id="bar-${b.key}" style="background:${b.color}"></div></div></div>`
-  ).join('');
-  document.body.appendChild(stats);
-
-  const clock = document.createElement('div');
-  clock.id = 'hud-clock';
-  clock.innerHTML =
-    '<span id="clock-dot"></span><span id="clock-day"></span><span id="clock-time"></span>';
-  document.body.appendChild(clock);
+  if (!document.getElementById('hud-stats')) {
+    const wrap = document.createElement('div');
+    wrap.id = 'hud-stats';
+    for (const s of STATS) {
+      const g = document.createElement('div');
+      g.className = 'hud-group';
+      const els: HTMLElement[] = [];
+      for (let i = 0; i < ICONS; i++) {
+        const ic = document.createElement('span');
+        ic.className = 'hud-ic';
+        ic.style.backgroundImage = s.off;
+        g.appendChild(ic);
+        els.push(ic);
+      }
+      iconEls[s.key] = els;
+      wrap.appendChild(g);
+    }
+    document.body.appendChild(wrap);
+  }
+  if (!document.getElementById('hud-clock')) {
+    const clock = document.createElement('div');
+    clock.id = 'hud-clock';
+    clock.innerHTML = '<span id="clock-dot"></span><span id="clock-day"></span><span id="clock-time"></span>';
+    document.body.appendChild(clock);
+  }
+  if (!document.getElementById('pickup-feed')) {
+    const feed = document.createElement('div');
+    feed.id = 'pickup-feed';
+    document.body.appendChild(feed);
+  }
 }
 
 export function updateHud(stats: Stats, time: TimeInfo): void {
-  for (const b of BARS) {
-    const el = document.getElementById('bar-' + b.key);
-    if (el) {
-      const v = Math.max(0, Math.min(100, (stats as unknown as Record<string, number>)[b.key]));
-      el.style.width = v + '%';
-    }
+  for (const s of STATS) {
+    const els = iconEls[s.key];
+    if (!els) continue;
+    const v = Math.max(0, Math.min(100, stats[s.key]));
+    const filled = Math.round((v / 100) * ICONS);
+    for (let i = 0; i < ICONS; i++) els[i].style.backgroundImage = i < filled ? s.on : s.off;
   }
   const h = time.tod * 24;
   const hh = Math.floor(h);
@@ -46,4 +78,21 @@ export function updateHud(stats: Stats, time: TimeInfo): void {
   if (t) t.textContent = String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
   const dot = document.getElementById('clock-dot');
   if (dot) dot.style.background = isDay ? '#f5c96b' : '#8aa0e8';
+}
+
+// Feed de recolección (izquierda): "+N Nombre".
+function css(n: number): string { return '#' + ('000000' + n.toString(16)).slice(-6); }
+
+export function pushPickup(text: string, color: number): void {
+  const feed = document.getElementById('pickup-feed');
+  if (!feed) return;
+  const row = document.createElement('div');
+  row.className = 'pf-row';
+  row.innerHTML = `<span class="pf-dot" style="background:${css(color)}"></span><span>${text}</span>`;
+  feed.prepend(row);
+  while (feed.childElementCount > 7) feed.lastElementChild?.remove();
+  // aparición + desvanecido
+  requestAnimationFrame(() => row.classList.add('show'));
+  window.setTimeout(() => { row.classList.remove('show'); }, 2400);
+  window.setTimeout(() => { row.remove(); }, 2900);
 }

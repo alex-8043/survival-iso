@@ -2,16 +2,19 @@
 // inventario, hotbar, crafteo, colocación, guardado y música.
 
 import { GameRenderer } from './client/renderer';
-import { setupInput } from './client/input';
-import { initHud, updateHud } from './client/hud';
+import { setupInput, setInputEnabled } from './client/input';
+import { initHud, updateHud, pushPickup } from './client/hud';
 import { showMenu } from './client/menu';
 import { togglePanel, isPanelOpen, updatePanel, setPanelCustom } from './client/panel';
 import { initHotbar, updateHotbar, type HotbarSel } from './client/hotbar';
 import { initCraft, toggleCraft, updateCraft } from './client/craftpanel';
-import { initControls } from './client/controls';
+import { initControls, toggleControls, showControls } from './client/controls';
+import { initPause, togglePause, isPaused, isCapturing } from './client/pausemenu';
+import { loadBinds, actionFor } from './client/keybinds';
 import { loadGame, saveGame } from './client/save';
 import { startMusic, toggleMusic, isMusicOn } from './client/music';
 import { AUTOSAVE_S } from './shared/constants';
+import { ITEMS } from './shared/items';
 import type { Customization } from './client/avatar';
 import type { InvEntry, SaveState, SimMsg, Stats } from './shared/protocol';
 
@@ -39,6 +42,7 @@ function toast(msg: string): void {
 }
 
 async function main(): Promise<void> {
+  loadBinds();
   const parent = document.getElementById('app');
   if (!parent) throw new Error('Falta el contenedor #app');
   const renderer = new GameRenderer();
@@ -66,11 +70,20 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   let lastInv: InvEntry[] = save?.inventory ?? [];
   let lastStats: Stats = save?.stats ?? { health: 100, food: 100, thirst: 100, stamina: 100 };
   let manualSave = false;
+  let pendingMenu = false;
 
   const worker = new Worker(new URL('./sim/worker.ts', import.meta.url), { type: 'module' });
   worker.onerror = (e) => showError('Fallo en la simulación: ' + (e.message || 'desconocido'));
 
-  const refreshInv = (inv: InvEntry[]) => {
+  const refreshInv = (inv: InvEntry[], silent = false) => {
+    if (!silent) {
+      const prev: Record<string, number> = {};
+      for (const e of lastInv) prev[e.id] = e.count;
+      for (const e of inv) {
+        const d = e.count - (prev[e.id] || 0);
+        if (d > 0) pushPickup('+' + d + ' ' + (ITEMS[e.id]?.name || e.id), ITEMS[e.id]?.color ?? 0xffffff);
+      }
+    }
     lastInv = inv;
     updateHotbar(inv);
     updateCraft(inv);
@@ -86,7 +99,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
         renderer.setStructures(m.structures);
         renderer.setLayer(m.loc, m.caveSeed);
         lastStats = m.stats;
-        refreshInv(m.inventory);
+        refreshInv(m.inventory, true);
         break;
       case 'snapshot':
         renderer.setLayer(m.snap.loc, m.snap.caveSeed);
@@ -109,7 +122,10 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
         renderer.spawnFloat(m.text, m.color, m.x, m.y);
         break;
       case 'save':
-        void saveGame(m.state, custom).then(() => { if (manualSave) { manualSave = false; toast('Partida guardada'); } });
+        void saveGame(m.state, custom).then(() => {
+          if (manualSave) { manualSave = false; toast('Partida guardada'); }
+          if (pendingMenu) window.location.reload();
+        });
         break;
     }
   };
@@ -126,18 +142,43 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   });
   initCraft((id) => worker.postMessage({ t: 'craft', id }));
 
+  const requestSave = (): void => { manualSave = true; worker.postMessage({ t: 'requestSave' }); };
+  initPause({
+    onSave: requestSave,
+    onMainMenu: () => { pendingMenu = true; worker.postMessage({ t: 'requestSave' }); window.setTimeout(() => window.location.reload(), 1500); },
+    musicOn: isMusicOn,
+    toggleMusic,
+    onPauseChange: (p) => setInputEnabled(!p),
+  });
+
   setupInput((state) => worker.postMessage({ t: 'input', input: state }));
 
   window.addEventListener('keydown', (e) => {
-    if (e.repeat) return;
-    if (e.code === 'KeyF') worker.postMessage({ t: 'consume', item: 'meat' });
-    else if (e.code === 'KeyG') worker.postMessage({ t: 'drink' });
-    else if (e.code === 'KeyE') worker.postMessage({ t: 'toggleCave' });
-    else if (e.code === 'KeyM') toggleMusic();
-    else if (e.code === 'KeyC') { e.preventDefault(); toggleCraft(); }
-    else if (e.code === 'KeyK') { manualSave = true; worker.postMessage({ t: 'requestSave' }); }
-    else if (e.code === 'Tab') { e.preventDefault(); togglePanel(); updatePanel(lastInv, lastStats); }
+    if (e.repeat || isCapturing()) return;
+    const a = actionFor(e.code);
+    if (!a) return;
+    e.preventDefault();
+    if (a === 'pause') { togglePause(); return; }
+    if (isPaused()) return; // el resto de acciones se bloquean en pausa
+    switch (a) {
+      case 'inventory': togglePanel(); updatePanel(lastInv, lastStats); break;
+      case 'craft': toggleCraft(); break;
+      case 'jump': renderer.jump(); break;
+      case 'cave': worker.postMessage({ t: 'toggleCave' }); break;
+      case 'eat': worker.postMessage({ t: 'consume', item: 'meat' }); break;
+      case 'drink': worker.postMessage({ t: 'drink' }); break;
+      case 'save': requestSave(); break;
+      case 'music': toggleMusic(); break;
+      case 'controls': toggleControls(); break;
+    }
   });
+
+  // Muestra los controles una vez, la primera partida nueva.
+  if (mode === 'new') {
+    try {
+      if (!localStorage.getItem('survival-seen-controls')) { localStorage.setItem('survival-seen-controls', '1'); showControls(); }
+    } catch { /* ignora */ }
+  }
 
   window.setInterval(() => worker.postMessage({ t: 'requestSave' }), AUTOSAVE_S * 1000);
   window.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') worker.postMessage({ t: 'requestSave' }); });

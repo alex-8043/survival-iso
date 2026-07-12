@@ -40,12 +40,16 @@
       .sw.sel { border-color: var(--gold); box-shadow: 0 0 0 1px #000 inset; }
       .opt-list { display: flex; flex-direction: column; gap: 10px; align-items: center; }
 
-      /* HUD */
-      #hud-stats { position: fixed; left: 12px; top: 12px; z-index: 20; display: flex; flex-direction: column; gap: 6px; background: rgba(0,0,0,.34); padding: 10px 12px; border-radius: 10px; }
-      .stat { display: flex; align-items: center; gap: 8px; }
-      .stat-label { width: 64px; font-size: 12px; opacity: .85; }
-      .stat-track { width: 140px; height: 10px; background: rgba(255,255,255,.12); border-radius: 6px; overflow: hidden; }
-      .stat-fill { height: 100%; width: 100%; border-radius: 6px; transition: width .15s linear; }
+      /* HUD: iconos de supervivencia (abajo, sobre la hotbar) */
+      #hud-stats { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); z-index: 22; display: grid; grid-template-columns: auto auto; gap: 3px 26px; background: rgba(0,0,0,.3); padding: 7px 12px; border-radius: 10px; }
+      .hud-group { display: flex; gap: 1px; }
+      .hud-ic { width: 13px; height: 13px; background-size: contain; background-repeat: no-repeat; background-position: center; }
+
+      /* Feed de recolección (izquierda) */
+      #pickup-feed { position: fixed; left: 12px; top: 50%; transform: translateY(-50%); z-index: 21; display: flex; flex-direction: column; gap: 5px; pointer-events: none; }
+      .pf-row { display: flex; align-items: center; gap: 7px; background: rgba(0,0,0,.42); padding: 4px 10px; border-radius: 7px; font-size: 13px; font-weight: 600; opacity: 0; transform: translateX(-12px); transition: opacity .25s, transform .25s; }
+      .pf-row.show { opacity: 1; transform: translateX(0); }
+      .pf-dot { width: 11px; height: 11px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.4); }
       #hud-clock { position: fixed; right: 12px; top: 12px; z-index: 20; display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,.34); padding: 8px 12px; border-radius: 10px; font-size: 14px; }
       #clock-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px rgba(245,201,107,.6); }
       #clock-day { font-weight: 700; } #clock-time { opacity: .85; }
@@ -109,7 +113,22 @@
       .ctrl-key { font-size: 12px; font-weight: 700; color: var(--gold); background: rgba(245,201,107,.12); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; white-space: nowrap; }
 
       /* Aviso de entrada/salida de cueva */
-      #cave-hint { position: fixed; left: 50%; bottom: 74px; transform: translateX(-50%); z-index: 24; display: none; background: rgba(0,0,0,.6); color: var(--gold); font: 13px system-ui, sans-serif; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); pointer-events: none; }
+      #cave-hint { position: fixed; left: 50%; bottom: 150px; transform: translateX(-50%); z-index: 24; display: none; background: rgba(0,0,0,.6); color: var(--gold); font: 13px system-ui, sans-serif; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); pointer-events: none; }
+
+      /* Menú de pausa */
+      #pause { position: fixed; inset: 0; z-index: 60; display: none; align-items: center; justify-content: center; background: rgba(6,10,6,.72); }
+      .pause-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px 26px; width: min(360px, 92vw); max-height: 90vh; overflow: auto; text-align: center; }
+      .pause-card.wide { width: min(460px, 94vw); }
+      .pause-card h2 { margin: 0 0 16px; }
+      .pause-btns { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+      .pause-btns.row { flex-direction: row; justify-content: center; margin-top: 14px; }
+      .keybind-title { margin: 16px 0 8px; font-size: 13px; opacity: .8; text-align: left; }
+      .keybind-list { display: flex; flex-direction: column; gap: 6px; }
+      .kb-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .kb-act { font-size: 13px; opacity: .9; }
+      .kb-key { min-width: 96px; font-size: 12px; font-weight: 700; color: var(--gold); background: rgba(245,201,107,.12); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+      .kb-key:hover { background: rgba(245,201,107,.22); }
+      .kb-key.listening { color: #fff; background: rgba(245,201,107,.32); }
     </style>
   </head>
   <body>

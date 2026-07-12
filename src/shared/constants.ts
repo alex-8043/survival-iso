@@ -34,7 +34,12 @@ export const STAMINA_REGEN = 14; // /s recuperando
 export const HEALTH_REGEN = 1.2; // /s si comida y sed están ok
 
 // Animales
-export const ANIMAL_CAP = 14; // máximo cerca del jugador
-export const ANIMAL_SPEED = 1.5; // tiles/s
-export const ANIMAL_HEALTH = 3; // golpes para abatir
-export const SPAWN_RADIUS = 17; // radio de aparición/desaparición (tiles)
+export const ANIMAL_CAP = 6; // máximo cerca del jugador (superficie)
+export const ANIMAL_SPEED = 1.5; // tiles/s (fallback; ver ANIMAL_INFO por tipo)
+export const ANIMAL_HEALTH = 3; // golpes para abatir (fallback)
+export const SPAWN_RADIUS = 20; // radio de aparición/desaparición (tiles)
+export const ANIMAL_SPAWN_S = 3.2; // segundos entre intentos de aparición
+
+// Mobs de cueva (murciélagos)
+export const CAVE_MOB_CAP = 4; // máximo dentro de una cueva
+export const CAVE_MOB_SPAWN_S = 5; // segundos entre intentos
