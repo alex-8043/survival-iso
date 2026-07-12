@@ -54,6 +54,14 @@ export const DRAW: Record<string, (ctx: CanvasRenderingContext2D) => void> = {
   },
   wood_block(ctx) { isoCube(ctx, 0x9c6b3f); },
   stone_block(ctx) { isoCube(ctx, 0x9aa0ab); },
+  chest(ctx) {
+    rr(ctx, 4, 11, 22, 15, 2, '#8a5a2b');
+    rr(ctx, 4, 7, 22, 7, 2, '#9a6a34');
+    rr(ctx, 4, 7, 22, 2.5, 2, '#a97b48');
+    rr(ctx, 13, 7, 4, 19, 1, '#caa24b');
+    rr(ctx, 13.4, 13.5, 3.2, 3.5, 1, '#6a4a24');
+    ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(4, 20); ctx.lineTo(26, 20); ctx.stroke();
+  },
   boat(ctx) {
     ctx.fillStyle = 'rgba(0,0,0,.16)';
     ctx.beginPath(); ctx.ellipse(15, 24, 12, 3, 0, 0, Math.PI * 2); ctx.fill();

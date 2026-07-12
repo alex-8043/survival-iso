@@ -8,29 +8,31 @@ export const TICK_MS = 1000 / TICK_HZ;
 
 export const WORLD_SEED = 1337;
 
-export const PLAYER_SPEED = 4.5; // tiles/segundo
-export const SPRINT_MULT = 1.7; // multiplicador al correr (Shift)
+export const PLAYER_SPEED = 3.4; // tiles/segundo (más lento en general)
+export const SPRINT_MULT = 1.6; // multiplicador al correr (Shift)
 
 export const INTERACT_RANGE = 2.3; // distancia para recolectar/atacar (tiles)
 export const HARVEST_COOLDOWN = 0.35; // segundos entre golpes
 
 export const MAX_ELEV_PX = 74; // altura visual máxima del relieve (px)
 export const VIEW_TILES = 30; // radio de render alrededor del jugador (tiles)
-export const WATER_SLOW = 0.45; // multiplicador de velocidad dentro del agua
+export const WATER_SLOW = 0.4; // multiplicador de velocidad nadando (sin barca)
+export const BOAT_MULT = 0.95; // con barca: casi como en tierra (ya no más rápido)
 
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 export const AUTOSAVE_S = 20; // autoguardado cada N segundos
 
 // Ciclo día/noche
-export const DAY_LENGTH_S = 480; // 8 minutos por día completo
+export const DAY_LENGTH_S = 1200; // 20 min por ciclo completo (~10 día + ~10 noche)
 export const NIGHT_MAX_DARK = 0.6; // opacidad máxima del oscurecimiento nocturno
 
 // Supervivencia (unidades por segundo, escala 0..100)
-export const FOOD_DECAY = 100 / 300; // comida se agota en ~5 min
-export const THIRST_DECAY = 100 / 220; // sed se agota en ~3.7 min
+export const FOOD_DECAY = 100 / 1500; // comida se agota en ~25 min
+export const THIRST_DECAY = 100 / 1200; // sed se agota en ~20 min
 export const STARVE_DAMAGE = 3.0; // vida/s si comida o sed llegan a 0
 export const STAMINA_DRAIN = 24; // /s corriendo
 export const STAMINA_REGEN = 14; // /s recuperando
+export const STAMINA_LOW = 20; // por debajo de esto en comida/sed no se regenera estamina
 export const HEALTH_REGEN = 1.2; // /s si comida y sed están ok
 
 // Animales

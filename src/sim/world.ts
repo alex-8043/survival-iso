@@ -5,6 +5,7 @@ import {
   PLAYER_SPEED,
   SPRINT_MULT,
   WATER_SLOW,
+  BOAT_MULT,
   INTERACT_RANGE,
   HARVEST_COOLDOWN,
   DAY_LENGTH_S,
@@ -13,6 +14,7 @@ import {
   STARVE_DAMAGE,
   STAMINA_DRAIN,
   STAMINA_REGEN,
+  STAMINA_LOW,
   HEALTH_REGEN,
   ANIMAL_CAP,
   SPAWN_RADIUS,
@@ -22,12 +24,13 @@ import {
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, springAt, CAVE_R } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
 import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor } from '../shared/items';
 import type { AnimalType } from '../shared/items';
 import { recipeById } from '../shared/recipes';
-import type { InputState, InteractTarget, Stats, AnimalSnap, TimeInfo, InvEntry, SaveState, Structure, Location } from '../shared/protocol';
+import { type Slot, INV_SIZE, INV_MAIN, CHEST_SIZE, makeSlots, addTo, takeFrom, countIn, slotCounts, moveSlot, sortRange, cloneSlots } from '../shared/inventory';
+import type { InputState, InteractTarget, Stats, AnimalSnap, TimeInfo, InvAddr, SaveState, Structure, Location } from '../shared/protocol';
 
 export const Position = defineComponent({ x: Types.f32, y: Types.f32 });
 
@@ -53,7 +56,8 @@ export interface Sim {
   nextAnimalId: number;
   spawnTimer: number;
   caveMobTimer: number;
-  inventory: Record<string, number>;
+  inv: Slot[];
+  chests: Record<number, Slot[]>;
   stats: Stats;
   timeS: number;
   tick: number;
@@ -99,7 +103,8 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     harvestTimer: 0, harvested: new Map(), depleted: new Set(),
     structures: [], nextStructId: 1,
     animals: [], nextAnimalId: 1, spawnTimer: 0, caveMobTimer: 0,
-    inventory: {}, stats: { health: 100, food: 100, thirst: 100, stamina: 100 },
+    inv: makeSlots(INV_SIZE), chests: {},
+    stats: { health: 100, food: 100, thirst: 100, stamina: 100 },
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
     location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null,
   };
@@ -115,7 +120,13 @@ export function createSimFromSave(save: SaveState): Sim {
   const sim = baseSim(save.seed, { x: save.px, y: save.py });
   sim.timeS = save.timeS;
   sim.stats = { ...save.stats };
-  for (const e of save.inventory) sim.inventory[e.id] = e.count;
+  if (save.inv) {
+    sim.inv = save.inv.slice(0, INV_SIZE);
+    while (sim.inv.length < INV_SIZE) sim.inv.push(null);
+  } else if (save.inventory) {
+    for (const e of save.inventory) addItem(sim, e.id, e.count); // convierte formato antiguo
+  }
+  if (save.chests) for (const [id, items] of save.chests) sim.chests[id] = items;
   sim.harvested = new Map(save.harvested);
   sim.depleted = new Set(save.depleted);
   sim.structures = save.structures ? save.structures.map((s) => ({ ...s })) : [];
@@ -133,7 +144,8 @@ export function serializeSim(sim: Sim): SaveState {
     version: SAVE_VERSION, seed: sim.seed,
     px: Position.x[sim.playerId], py: Position.y[sim.playerId],
     timeS: sim.timeS, stats: { ...sim.stats },
-    inventory: invEntries(sim.inventory),
+    inv: cloneSlots(sim.inv),
+    chests: Object.keys(sim.chests).map((k) => [Number(k), cloneSlots(sim.chests[Number(k)])] as [number, Slot[]]),
     harvested: [...sim.harvested.entries()], depleted: [...sim.depleted],
     structures: sim.structures.map((s) => ({ ...s })),
     loc: sim.location, caveSeed: sim.caveSeed,
@@ -158,8 +170,14 @@ function nodeAmount(sim: Sim, x: number, y: number, kind: NodeKind): number {
   return stored !== undefined ? stored : NODE_KINDS[kind].amount;
 }
 
+function invCount(sim: Sim, id: string): number { return countIn(sim.inv, id); }
+
+// Añade ítems: herramientas/colocables prefieren la hotbar; el resto, el inventario principal.
 function addItem(sim: Sim, item: string, n: number): void {
-  sim.inventory[item] = (sim.inventory[item] || 0) + n;
+  const d = ITEMS[item];
+  const preferHotbar = !!(d && (d.tool || d.boat || d.place));
+  if (preferHotbar) { n = addTo(sim.inv, item, n, INV_MAIN, INV_SIZE); if (n > 0) addTo(sim.inv, item, n, 0, INV_MAIN); }
+  else { n = addTo(sim.inv, item, n, 0, INV_MAIN); if (n > 0) addTo(sim.inv, item, n, INV_MAIN, INV_SIZE); }
 }
 
 function structureAt(sim: Sim, x: number, y: number): Structure | undefined {
@@ -204,9 +222,10 @@ function trySpawnCaveMob(sim: Sim): void {
   if (hash2(sim.tick, 3, (sim.caveSeed ^ 0x1) | 0) > 0.45) return; // aparición esporádica
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
+  const size = caveSizeFor(sim.caveSeed);
   for (let a = 0; a < 16; a++) {
     const ang = hash2(sim.nextAnimalId * 5 + a, sim.tick + a * 3, sim.caveSeed) * Math.PI * 2;
-    const dist = 6 + hash2(a, sim.nextAnimalId, sim.caveSeed) * (CAVE_R - 9);
+    const dist = 5 + hash2(a, sim.nextAnimalId, sim.caveSeed) * Math.max(4, size - 8);
     const x = Math.round(px + Math.cos(ang) * dist);
     const y = Math.round(py + Math.sin(ang) * dist);
     if (!caveTile(x, y, sim.caveSeed).passable || caveNodeAt(x, y, sim.caveSeed)) continue;
@@ -237,8 +256,8 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   let px = Position.x[eid];
   let py = Position.y[eid];
   const onWater = sim.location !== 'cave' && isWater(tileAt(Math.round(px), Math.round(py), sim.seed).terrain);
-  const hasBoat = (sim.inventory['boat'] || 0) > 0;
-  const waterFactor = onWater ? (hasBoat ? 1.55 : WATER_SLOW) : 1;
+  const hasBoat = invCount(sim, 'boat') > 0;
+  const waterFactor = onWater ? (hasBoat ? BOAT_MULT : WATER_SLOW) : 1;
   const speed = PLAYER_SPEED * (sprinting ? SPRINT_MULT : 1) * waterFactor;
   const len = Math.hypot(gx, gy) || 1;
   const vx = moving ? (gx / len) * speed : 0;
@@ -250,8 +269,9 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   Position.x[eid] = px;
   Position.y[eid] = py;
 
+  const lowEnergy = sim.stats.food < STAMINA_LOW || sim.stats.thirst < STAMINA_LOW;
   if (sprinting) sim.stats.stamina = Math.max(0, sim.stats.stamina - STAMINA_DRAIN * dt);
-  else sim.stats.stamina = Math.min(100, sim.stats.stamina + STAMINA_REGEN * dt);
+  else if (!lowEnergy) sim.stats.stamina = Math.min(100, sim.stats.stamina + STAMINA_REGEN * dt);
 
   sim.stats.food = Math.max(0, sim.stats.food - FOOD_DECAY * dt);
   sim.stats.thirst = Math.max(0, sim.stats.thirst - THIRST_DECAY * dt);
@@ -319,6 +339,11 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
     const kind = activeNodeAt(sim, tgt.x, tgt.y);
     if (!kind) return 0;
     const tool = toolFor(sim.activeTool);
+    // La piedra y el carbón exigen un pico (progresión).
+    if ((kind === 'rock' || kind === 'coal') && !(tool && tool.kind === 'pickaxe')) {
+      res.floaters.push({ text: 'Necesitas un pico', color: 0xff8a8a, x: tgt.x, y: tgt.y });
+      return HARVEST_COOLDOWN * 2;
+    }
     // El hierro exige pico de piedra o mejor.
     if (kind === 'iron' && !(tool && tool.kind === 'pickaxe' && tool.tier >= 2)) {
       res.floaters.push({ text: 'Necesitas pico de piedra', color: 0xff8a8a, x: tgt.x, y: tgt.y });
@@ -406,19 +431,19 @@ export function craft(sim: Sim, id: string): { ok: boolean; floater?: Floater } 
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
   for (const k of Object.keys(r.ingredients)) {
-    if ((sim.inventory[k] || 0) < r.ingredients[k]) return { ok: false };
+    if (invCount(sim, k) < r.ingredients[k]) return { ok: false };
   }
   if (r.station && !hasStationNear(sim, r.station)) {
     return { ok: false, floater: { text: 'Necesitas: ' + ITEMS[r.station].name + ' cerca', color: 0xff8a8a, x: px, y: py } };
   }
-  for (const k of Object.keys(r.ingredients)) sim.inventory[k] -= r.ingredients[k];
+  for (const k of Object.keys(r.ingredients)) takeFrom(sim.inv, k, r.ingredients[k]);
   addItem(sim, r.out.item, r.out.count);
   return { ok: true };
 }
 
 export function place(sim: Sim, item: string, x: number, y: number): { ok: boolean; floater?: Floater } {
   const def = ITEMS[item];
-  if (!def || !def.place || (sim.inventory[item] || 0) <= 0) return { ok: false };
+  if (!def || !def.place || invCount(sim, item) <= 0) return { ok: false };
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
   if (sim.location === 'cave') return { ok: false, floater: { text: 'No puedes construir en la cueva', color: 0xff8a8a, x: px, y: py } };
@@ -427,17 +452,19 @@ export function place(sim: Sim, item: string, x: number, y: number): { ok: boole
   if (isWater(terr) || playerBlocked(terr)) return { ok: false };
   if (structureAt(sim, x, y)) return { ok: false };
   if (Math.round(px) === x && Math.round(py) === y) return { ok: false };
-  sim.inventory[item] -= 1;
-  sim.structures.push({ id: sim.nextStructId++, type: item, x, y });
+  takeFrom(sim.inv, item, 1);
+  const id = sim.nextStructId++;
+  sim.structures.push({ id, type: item, x, y });
+  if (def.place === 'container') sim.chests[id] = makeSlots(CHEST_SIZE);
   return { ok: true };
 }
 
 export function consume(sim: Sim, item: string): { ok: boolean; floater?: Floater } {
   const def = ITEMS[item];
   const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
-  if (!def || !def.food || !(sim.inventory[item] > 0)) return { ok: false };
+  if (!def || !def.food || invCount(sim, item) <= 0) return { ok: false };
   if (sim.stats.food >= 99.5) return { ok: false, floater: { text: 'Estás lleno', color: 0xffd05a, x: px, y: py } };
-  sim.inventory[item] -= 1;
+  takeFrom(sim.inv, item, 1);
   sim.stats.food = Math.min(100, sim.stats.food + def.food);
   return { ok: true };
 }
@@ -445,10 +472,26 @@ export function consume(sim: Sim, item: string): { ok: boolean; floater?: Floate
 // Devuelve el mejor alimento disponible (cocinado antes que crudo).
 export function bestFood(sim: Sim): string | null {
   const order = ['cooked_meat', 'meat'];
-  for (const id of order) if ((sim.inventory[id] || 0) > 0) return id;
-  for (const id of Object.keys(sim.inventory)) if (ITEMS[id]?.food && sim.inventory[id] > 0) return id;
+  for (const id of order) if (invCount(sim, id) > 0) return id;
+  const counts = slotCounts(sim.inv);
+  for (const id of Object.keys(counts)) if (ITEMS[id]?.food && counts[id] > 0) return id;
   return null;
 }
+
+// --- Movimiento / orden de ranuras y cofres ---
+function slotsOf(sim: Sim, addr: InvAddr): Slot[] | null {
+  if (addr.c === 'inv') return sim.inv;
+  return sim.chests[addr.id] ?? null;
+}
+export function moveItem(sim: Sim, from: InvAddr, to: InvAddr): void {
+  const a = slotsOf(sim, from), b = slotsOf(sim, to);
+  if (!a || !b) return;
+  if (from.i < 0 || from.i >= a.length || to.i < 0 || to.i >= b.length) return;
+  moveSlot(a, from.i, b, to.i);
+}
+export function sortInv(sim: Sim): void { sortRange(sim.inv, 0, INV_MAIN); }
+export function sortChest(sim: Sim, id: number): void { const c = sim.chests[id]; if (c) sortRange(c, 0, c.length); }
+export function chestItems(sim: Sim, id: number): Slot[] | null { return sim.chests[id] ?? null; }
 
 export function drink(sim: Sim): { ok: boolean; floater?: Floater } {
   const px = Math.round(Position.x[sim.playerId]);
@@ -476,9 +519,7 @@ export function timeInfo(sim: Sim): TimeInfo {
 export function animalSnaps(sim: Sim): AnimalSnap[] {
   return sim.animals.filter((a) => a.layer === sim.location).map((a) => ({ id: a.id, type: a.type, x: a.x, y: a.y, alive: a.alive }));
 }
-export function invEntries(inv: Record<string, number>): InvEntry[] {
-  return Object.keys(inv).filter((k) => inv[k] > 0).map((k) => ({ id: k, count: inv[k] }));
-}
+export function invSlots(sim: Sim): Slot[] { return sim.inv; }
 export function playerPos(sim: Sim): { x: number; y: number } {
   return { x: Position.x[sim.playerId], y: Position.y[sim.playerId] };
 }

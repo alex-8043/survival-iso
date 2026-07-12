@@ -4,7 +4,7 @@
 import { RECIPES, RECIPE_CATS, type Recipe } from '../shared/recipes';
 import { ITEMS } from '../shared/items';
 import { itemSpriteURL } from './itemsprites';
-import type { InvEntry } from '../shared/protocol';
+import { slotCounts, type Slot } from '../shared/inventory';
 
 let open = false;
 let station: string | null = null; // null = crafteo básico
@@ -31,9 +31,8 @@ export function openStationCraft(type: string): void {
 }
 export function closeCraft(): void { open = false; render(); }
 
-export function updateCraft(inv: InvEntry[]): void {
-  counts = {};
-  for (const e of inv) counts[e.id] = e.count;
+export function updateCraft(inv: Slot[]): void {
+  counts = slotCounts(inv);
   if (open) render();
 }
 

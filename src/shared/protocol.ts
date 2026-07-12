@@ -1,6 +1,9 @@
 // Contrato de mensajes cliente <-> simulación (mismo protocolo servirá para MP).
 
 import type { AnimalType } from './items';
+import type { Slot } from './inventory';
+
+export type InvAddr = { c: 'inv'; i: number } | { c: 'chest'; id: number; i: number };
 
 export interface AnimalSnap {
   id: number;
@@ -69,7 +72,9 @@ export interface SaveState {
   py: number;
   timeS: number;
   stats: Stats;
-  inventory: InvEntry[];
+  inventory?: InvEntry[]; // formato antiguo (compat)
+  inv?: Slot[]; // ranuras (nuevo)
+  chests?: [number, Slot[]][];
   harvested: [string, number][];
   depleted: string[];
   structures: Structure[];
@@ -90,14 +95,19 @@ export type ClientMsg =
   | { t: 'consume'; item?: string }
   | { t: 'drink' }
   | { t: 'toggleCave' }
+  | { t: 'move'; from: InvAddr; to: InvAddr }
+  | { t: 'sortInv' }
+  | { t: 'sortChest'; id: number }
+  | { t: 'openChest'; id: number }
   | { t: 'requestSave' };
 
 // Simulación -> Cliente
 export type SimMsg =
-  | { t: 'ready'; seed: number; inventory: InvEntry[]; stats: Stats; structures: Structure[]; loc: Location; caveSeed: number }
+  | { t: 'ready'; seed: number; inv: Slot[]; stats: Stats; structures: Structure[]; loc: Location; caveSeed: number }
   | { t: 'snapshot'; snap: Snapshot }
   | { t: 'harvest'; x: number; y: number; depleted: boolean }
-  | { t: 'inventory'; inventory: InvEntry[] }
+  | { t: 'inventory'; inv: Slot[] }
+  | { t: 'chest'; id: number; items: Slot[] }
   | { t: 'structures'; structures: Structure[] }
   | { t: 'floater'; text: string; color: number; x: number; y: number }
   | { t: 'save'; state: SaveState };

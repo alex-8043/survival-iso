@@ -1,19 +1,18 @@
-// Hotbar de 9 ranuras de objetos (sin ranura de mano). Herramientas / colocables
-// / barca. Teclas 1-9, rueda o clic. Una ranura vacía = manos.
+// Hotbar: refleja las 9 últimas ranuras del inventario (INV_MAIN..). Teclas 1-9,
+// rueda o clic. Una ranura vacía = manos.
 
 import { ITEMS } from '../shared/items';
 import { itemSpriteURL } from './itemsprites';
-import type { InvEntry } from '../shared/protocol';
+import { INV_MAIN, INV_HOTBAR } from '../shared/inventory';
+import type { Slot } from '../shared/inventory';
 
 export interface HotbarSel {
   kind: 'hand' | 'tool' | 'place' | 'boat';
   item: string | null;
 }
 
-const SLOT_COUNT = 9;
-let slots: (string | null)[] = new Array(SLOT_COUNT).fill(null);
+let hot: Slot[] = new Array(INV_HOTBAR).fill(null);
 let idx = 0;
-let counts: Record<string, number> = {};
 let onSel: (s: HotbarSel) => void = () => {};
 
 function selOf(item: string | null): HotbarSel {
@@ -26,26 +25,23 @@ function selOf(item: string | null): HotbarSel {
 }
 
 export function currentSel(): HotbarSel {
-  return selOf(slots[idx]);
+  return selOf(hot[idx]?.id ?? null);
 }
-
-function emit(): void {
-  onSel(currentSel());
-}
+function emit(): void { onSel(currentSel()); }
 
 export function initHotbar(onSelect: (s: HotbarSel) => void): void {
   onSel = onSelect;
   window.addEventListener('keydown', (e) => {
     if (e.code.startsWith('Digit')) {
       const n = parseInt(e.code.slice(5), 10);
-      if (n >= 1 && n <= SLOT_COUNT) { idx = n - 1; render(); emit(); }
+      if (n >= 1 && n <= INV_HOTBAR) { idx = n - 1; render(); emit(); }
     }
   });
   window.addEventListener('wheel', (e) => {
     const dir = e.deltaY > 0 ? 1 : -1;
-    for (let s = 0; s < SLOT_COUNT; s++) {
-      idx = (idx + dir + SLOT_COUNT) % SLOT_COUNT;
-      if (slots[idx]) break; // salta ranuras vacías
+    for (let s = 0; s < INV_HOTBAR; s++) {
+      idx = (idx + dir + INV_HOTBAR) % INV_HOTBAR;
+      if (hot[idx]) break;
     }
     render();
     emit();
@@ -54,48 +50,27 @@ export function initHotbar(onSelect: (s: HotbarSel) => void): void {
   emit();
 }
 
-export function updateHotbar(inv: InvEntry[]): void {
-  counts = {};
-  for (const e of inv) counts[e.id] = e.count;
-  const tools = inv.filter((e) => ITEMS[e.id]?.tool).map((e) => e.id);
-  const places = inv.filter((e) => ITEMS[e.id]?.place).map((e) => e.id);
-  const boats = inv.filter((e) => ITEMS[e.id]?.boat).map((e) => e.id);
-  const items = [...tools, ...places, ...boats];
-  const cur = slots[idx];
-  slots = new Array(SLOT_COUNT).fill(null);
-  for (let i = 0; i < items.length && i < SLOT_COUNT; i++) slots[i] = items[i];
-  const ni = cur ? slots.indexOf(cur) : -1;
-  if (ni >= 0) idx = ni; // mantiene la selección aunque cambie de ranura
+export function updateHotbar(slots: Slot[]): void {
+  hot = slots.slice(INV_MAIN, INV_MAIN + INV_HOTBAR);
+  while (hot.length < INV_HOTBAR) hot.push(null);
   render();
   emit();
 }
 
-function iconHtml(it: string): string {
-  return `<span class="hicon himg" style="background-image:url(${itemSpriteURL(it)})"></span>`;
-}
-
 function render(): void {
   let bar = document.getElementById('hotbar');
-  if (!bar) {
-    bar = document.createElement('div');
-    bar.id = 'hotbar';
-    document.body.appendChild(bar);
-  }
-  bar.innerHTML = slots
-    .map((it, i) => {
+  if (!bar) { bar = document.createElement('div'); bar.id = 'hotbar'; document.body.appendChild(bar); }
+  bar.innerHTML = hot
+    .map((s, i) => {
       const sel = i === idx ? ' sel' : '';
       const key = `<span class="hkey">${i + 1}</span>`;
-      if (!it) return `<div class="hslot empty${sel}" data-i="${i}">${key}</div>`;
-      const d = ITEMS[it];
-      const badge = d?.place || d?.boat ? `<span class="hcount">${counts[it] || 0}</span>` : '';
-      return `<div class="hslot${sel}" data-i="${i}" title="${d ? d.name : it}">${key}${iconHtml(it)}${badge}</div>`;
+      if (!s) return `<div class="hslot empty${sel}" data-i="${i}">${key}</div>`;
+      const d = ITEMS[s.id];
+      const badge = s.count > 1 ? `<span class="hcount">${s.count}</span>` : '';
+      return `<div class="hslot${sel}" data-i="${i}" title="${d ? d.name : s.id}">${key}<span class="hicon himg" style="background-image:url(${itemSpriteURL(s.id)})"></span>${badge}</div>`;
     })
     .join('');
   bar.querySelectorAll('.hslot').forEach((elm) =>
-    elm.addEventListener('click', () => {
-      idx = parseInt((elm as HTMLElement).dataset.i!, 10);
-      render();
-      emit();
-    })
+    elm.addEventListener('click', () => { idx = parseInt((elm as HTMLElement).dataset.i!, 10); render(); emit(); })
   );
 }

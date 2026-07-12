@@ -77,13 +77,13 @@ export function playerBlocked(terrain: Terrain): boolean {
 // El interior es una sala acotada, determinista a partir de la semilla de cueva.
 // ---------------------------------------------------------------------------
 
-export const CAVE_R = 44; // borde exterior de la cueva (tiles) — cuevas grandes
+export const CAVE_R = 54; // radio máximo posible (bound para bucles)
 
-// Entradas de cueva: muy raras, en montaña o roca.
+// Entradas de cueva: rarísimas, en montaña o roca.
 export function caveEntranceAt(x: number, y: number, seed: number): boolean {
   const t = tileAt(x, y, seed).terrain;
   if (t !== TERRAIN.MOUNTAIN && t !== TERRAIN.ROCK) return false;
-  return hash2(x, y, (seed ^ 0x5eed) | 0) < 0.006;
+  return hash2(x, y, (seed ^ 0x5eed) | 0) < 0.003;
 }
 
 // Semilla determinista de la cueva a partir de las coordenadas de su entrada.
@@ -91,38 +91,48 @@ export function caveSeedFor(ex: number, ey: number, seed: number): number {
   return (Math.imul(ex | 0, 73856093) ^ Math.imul(ey | 0, 19349663) ^ (seed | 0)) | 0;
 }
 
+// Tamaño (radio aproximado) de una cueva: aleatorio, de enana a grande.
+export function caveSizeFor(cseed: number): number {
+  return 10 + Math.floor(hash2(1, 2, cseed | 0) * 42); // 10..51
+}
+
 export type CaveKind = 'floor' | 'wall' | 'lava' | 'water';
 export interface CaveTile { kind: CaveKind; terrain: Terrain; elevation: number; passable: boolean; wall: boolean; }
 
 const CAVE_WALL: CaveTile = { kind: 'wall', terrain: 1, elevation: 0.55, passable: false, wall: true };
+function caveFloor(elev: number): CaveTile { return { kind: 'floor', terrain: 0, elevation: elev, passable: true, wall: false }; }
 
 // Interior de cueva: cavernas y pasillos orgánicos con desniveles, lava y agua.
-// El centro (0,0) siempre es suelo despejado: ahí está la salida.
+// El núcleo (alrededor de la salida) siempre es suelo abierto y conectado.
 export function caveTile(x: number, y: number, cseed: number): CaveTile {
+  const size = caveSizeFor(cseed);
   const d = Math.hypot(x, y);
-  const edge = CAVE_R + fbm((x + 12) * 0.05, (y - 12) * 0.05, (cseed ^ 0x99) | 0, 2) * 12 - 6;
+  const clearR = Math.min(7, size * 0.45);
+  if (d < clearR) return caveFloor(0.04); // núcleo despejado
+  const edge = size + fbm((x + 12) * 0.05, (y - 12) * 0.05, (cseed ^ 0x99) | 0, 2) * 8 - 4;
   if (d >= edge) return CAVE_WALL;
-  if (d < 3.2) return { kind: 'floor', terrain: 0, elevation: 0.04, passable: true, wall: false };
   const o = fbm(x * 0.085, y * 0.085, cseed, 4);
-  if (o <= 0.44) return CAVE_WALL;
-  if (d > 9) {
+  // umbral de muro más bajo cerca del núcleo: garantiza conexión hacia fuera
+  const thr = 0.44 - Math.max(0, clearR + 6 - d) * 0.035;
+  if (o <= thr) return CAVE_WALL;
+  if (d > clearR + 3 && size > 16) {
     const lv = fbm((x + 300) * 0.12, (y - 200) * 0.12, (cseed ^ 0x77) | 0, 3);
-    if (lv > 0.79) return { kind: 'lava', terrain: 0, elevation: 0, passable: false, wall: false };
+    if (lv > 0.8) return { kind: 'lava', terrain: 0, elevation: 0, passable: false, wall: false };
     const wt = fbm((x - 260) * 0.11, (y + 170) * 0.11, (cseed ^ 0x33) | 0, 3);
-    if (wt > 0.8) return { kind: 'water', terrain: 0, elevation: 0, passable: false, wall: false };
+    if (wt > 0.81) return { kind: 'water', terrain: 0, elevation: 0, passable: false, wall: false };
   }
   const e = fbm(x * 0.06, y * 0.06, (cseed ^ 0x9) | 0, 3);
-  return { kind: 'floor', terrain: 0, elevation: Math.max(0, e - 0.42) * 0.7, passable: true, wall: false };
+  return caveFloor(Math.max(0, e - 0.42) * 0.7);
 }
 
-// Nodos minables (mucho más escasos que antes), sólo en suelo.
+// Nodos minables (muy escasos), sólo en suelo.
 export function caveNodeAt(x: number, y: number, cseed: number): NodeKind | null {
   if (caveTile(x, y, cseed).kind !== 'floor') return null;
   if (Math.abs(x) <= 2 && Math.abs(y) <= 2) return null;
   const r = hash2(x, y, (cseed ^ 0x1f7) | 0);
-  if (r < 0.02) return 'iron';
-  if (r < 0.055) return 'coal';
-  if (r < 0.13) return 'rock';
+  if (r < 0.012) return 'iron';
+  if (r < 0.03) return 'coal';
+  if (r < 0.075) return 'rock';
   return null;
 }
 
@@ -147,5 +157,5 @@ export function caveDecorAt(x: number, y: number, cseed: number): CaveDecor | nu
 export function springAt(x: number, y: number, seed: number): boolean {
   const t = tileAt(x, y, seed).terrain;
   if (t !== TERRAIN.GRASS && t !== TERRAIN.FOREST) return false;
-  return hash2(x, y, (seed ^ 0x5b1e) | 0) < 0.005;
+  return hash2(x, y, (seed ^ 0x5b1e) | 0) < 0.0015;
 }

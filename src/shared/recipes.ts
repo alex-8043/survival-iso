@@ -28,6 +28,7 @@ export const RECIPES: Recipe[] = [
   { id: 'iron_chest', name: 'Pechera de hierro', out: { item: 'iron_chest', count: 1 }, ingredients: { iron_ingot: 8 }, station: 'forge', cat: 'Armaduras' },
   { id: 'iron_ingot', name: 'Fundir hierro', out: { item: 'iron_ingot', count: 1 }, ingredients: { iron_ore: 1, coal: 1 }, station: 'furnace', cat: 'Fundición' },
   { id: 'cooked_meat', name: 'Cocinar carne', out: { item: 'cooked_meat', count: 1 }, ingredients: { meat: 1, wood: 1 }, station: 'furnace', cat: 'Cocina' },
+  { id: 'chest', name: 'Cofre (27 espacios)', out: { item: 'chest', count: 1 }, ingredients: { wood: 8 }, cat: 'Construcción' },
   { id: 'wood_block', name: 'Bloque de madera ×4', out: { item: 'wood_block', count: 4 }, ingredients: { wood: 1 }, cat: 'Construcción' },
   { id: 'stone_block', name: 'Bloque de piedra ×4', out: { item: 'stone_block', count: 4 }, ingredients: { stone: 1 }, cat: 'Construcción' },
   { id: 'crafting_table', name: 'Mesa de crafteo', out: { item: 'crafting_table', count: 1 }, ingredients: { wood: 4 }, cat: 'Estaciones' },

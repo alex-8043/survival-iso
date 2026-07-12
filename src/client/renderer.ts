@@ -68,13 +68,14 @@ export class GameRenderer {
   target: InteractTarget = null;
   selected: HotbarSel | null = null;
   placeTile: { x: number; y: number } | null = null;
-  stationTarget: { type: string; x: number; y: number } | null = null;
-  readonly structTiles = new Map<string, string>();
+  structTarget: { id: number; type: string; x: number; y: number } | null = null;
+  readonly structTiles = new Map<string, { id: number; type: string }>();
   exitMarker: Container | null = null;
   private lastSentKey = 'x';
   onInteract: (active: boolean, target: InteractTarget) => void = () => {};
   onPlace: (x: number, y: number, item: string) => void = () => {};
   onOpenStation: (type: string) => void = () => {};
+  onOpenChest: (id: number) => void = () => {};
 
   async init(parent: HTMLElement): Promise<void> {
     this.app = new Application();
@@ -105,7 +106,11 @@ export class GameRenderer {
         this.onPlace(this.placeTile.x, this.placeTile.y, this.selected.item);
         return;
       }
-      if (this.stationTarget) { this.onOpenStation(this.stationTarget.type); return; }
+      if (this.structTarget) {
+        if (this.structTarget.type === 'chest') this.onOpenChest(this.structTarget.id);
+        else this.onOpenStation(this.structTarget.type);
+        return;
+      }
       this.active = true;
       this.emitInteract();
     });
@@ -208,7 +213,7 @@ export class GameRenderer {
 
   setStructures(list: Structure[]): void {
     this.structTiles.clear();
-    for (const s of list) this.structTiles.set(s.x + ',' + s.y, s.type);
+    for (const s of list) this.structTiles.set(s.x + ',' + s.y, { id: s.id, type: s.type });
     const seen = new Set<number>();
     for (const s of list) {
       seen.add(s.id);
@@ -435,6 +440,13 @@ export class GameRenderer {
       g.roundRect(-14, -21, 28, 9, 2).fill({ color: 0x53535e });
       g.poly([13, -21, 21, -17.5, 13, -13.5]).fill({ color: 0x53535e });
       g.roundRect(-14, -21, 28, 3, 2).fill({ color: 0x686872 });
+    } else if (type === 'chest') {
+      g.ellipse(0, 2, 15, 6).fill({ color: 0x000000, alpha: 0.2 });
+      g.roundRect(-13, -13, 26, 15, 2).fill({ color: 0x8a5a2b });
+      g.roundRect(-13, -20, 26, 8, 3).fill({ color: 0x9a6a34 });
+      g.roundRect(-13, -20, 26, 3, 3).fill({ color: 0xa97b48 });
+      g.rect(-2.5, -20, 5, 22).fill({ color: 0xcaa24b });
+      g.roundRect(-3, -11, 6, 5, 1).fill({ color: 0x6a4a24 });
     } else {
       const hw = (TILE_W / 2) * 0.72, hh = (TILE_H / 2) * 0.72, H = 20;
       g.ellipse(0, 2, hw, 6).fill({ color: 0x000000, alpha: 0.18 });
@@ -597,7 +609,7 @@ export class GameRenderer {
     this.ghost.clear();
     let next: InteractTarget = null;
     this.placeTile = null;
-    this.stationTarget = null;
+    this.structTarget = null;
 
     if (this.mouseX >= 0) {
       const wx = this.mouseX - this.world.x, wy = this.mouseY - this.world.y;
@@ -612,8 +624,8 @@ export class GameRenderer {
       } else {
         const pick = this.pickTile(wx, wy);
         const st = this.structTiles.get(pick.x + ',' + pick.y);
-        if (st && (st === 'crafting_table' || st === 'furnace' || st === 'forge') && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) {
-          this.stationTarget = { type: st, x: pick.x, y: pick.y };
+        if (st && (st.type === 'crafting_table' || st.type === 'furnace' || st.type === 'forge' || st.type === 'chest') && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) {
+          this.structTarget = { id: st.id, type: st.type, x: pick.x, y: pick.y };
           this.app.canvas.style.cursor = 'pointer';
         } else {
           let bestD = 24;
@@ -639,16 +651,16 @@ export class GameRenderer {
       const s = gridToScreen(hx, hy), hw = TILE_W / 2, hh = TILE_H / 2, yy = s.y - hl;
       this.highlight.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).stroke({ width: 2, color: next.kind === 'animal' ? 0xff6b6b : 0xf5c96b, alpha: 0.95 });
     }
-    if (this.stationTarget) {
-      const st = this.stationTarget;
+    if (this.structTarget) {
+      const st = this.structTarget;
       const sp = gridToScreen(st.x, st.y), hw = TILE_W / 2, hh = TILE_H / 2, yy = sp.y - this.elevAtL(st.x, st.y) * MAX_ELEV_PX;
       this.highlight.poly([sp.x, yy - hh, sp.x + hw, yy, sp.x, yy + hh, sp.x - hw, yy]).stroke({ width: 2, color: 0x8bd1ff, alpha: 0.95 });
     }
 
-    const key = placing ? 'p' : this.stationTarget ? 's' + this.stationTarget.x + ',' + this.stationTarget.y : next ? (next.kind === 'node' ? 'n' + next.x + ',' + next.y : 'a' + next.id) : '-';
+    const key = placing ? 'p' : this.structTarget ? 's' + this.structTarget.x + ',' + this.structTarget.y : next ? (next.kind === 'node' ? 'n' + next.x + ',' + next.y : 'a' + next.id) : '-';
     if (key !== this.lastSentKey) {
       this.lastSentKey = key;
-      this.app.canvas.setAttribute('data-target', placing ? 'place' : this.stationTarget ? 'station' : next ? next.kind : 'none');
+      this.app.canvas.setAttribute('data-target', placing ? 'place' : this.structTarget ? (this.structTarget.type === 'chest' ? 'chest' : 'station') : next ? next.kind : 'none');
       if (!placing) this.emitInteract();
     }
   }

@@ -5,7 +5,8 @@ import { GameRenderer } from './client/renderer';
 import { setupInput, setInputEnabled } from './client/input';
 import { initHud, updateHud, pushPickup } from './client/hud';
 import { showMenu } from './client/menu';
-import { togglePanel, isPanelOpen, updatePanel, setPanelCustom } from './client/panel';
+import { initPanel, togglePanel, isPanelOpen, updatePanel, updatePanelStats, setPanelCustom } from './client/panel';
+import { initChest, openChestPanel, setChestItems, updateChestInv } from './client/chestpanel';
 import { initHotbar, updateHotbar, type HotbarSel } from './client/hotbar';
 import { initCraft, toggleCraft, updateCraft, openStationCraft } from './client/craftpanel';
 import { initControls, toggleControls, showControls } from './client/controls';
@@ -16,8 +17,9 @@ import { loadGame, saveGame } from './client/save';
 import { startMusic, toggleMusic, isMusicOn } from './client/music';
 import { AUTOSAVE_S } from './shared/constants';
 import { ITEMS } from './shared/items';
+import { slotCounts, countIn, type Slot } from './shared/inventory';
 import type { Customization } from './client/avatar';
-import type { InvEntry, SaveState, SimMsg, Stats } from './shared/protocol';
+import type { SaveState, SimMsg, Stats } from './shared/protocol';
 
 function showError(msg: string): void {
   // eslint-disable-next-line no-console
@@ -58,17 +60,13 @@ async function main(): Promise<void> {
   });
 }
 
-function hasBoat(inv: InvEntry[]): boolean {
-  return inv.some((e) => e.id === 'boat' && e.count > 0);
-}
-
 function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Customization, save: SaveState | null): void {
   startMusic();
   initHud();
   initControls();
   setPanelCustom(custom);
 
-  let lastInv: InvEntry[] = save?.inventory ?? [];
+  let lastSlots: Slot[] = save?.inv ?? [];
   let lastStats: Stats = save?.stats ?? { health: 100, food: 100, thirst: 100, stamina: 100 };
   let manualSave = false;
   let pendingMenu = false;
@@ -76,20 +74,21 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   const worker = new Worker(new URL('./sim/worker.ts', import.meta.url), { type: 'module' });
   worker.onerror = (e) => showError('Fallo en la simulación: ' + (e.message || 'desconocido'));
 
-  const refreshInv = (inv: InvEntry[], silent = false) => {
+  const refreshInv = (inv: Slot[], silent = false) => {
     if (!silent) {
-      const prev: Record<string, number> = {};
-      for (const e of lastInv) prev[e.id] = e.count;
-      for (const e of inv) {
-        const d = e.count - (prev[e.id] || 0);
-        if (d > 0) pushPickup('+' + d + ' ' + (ITEMS[e.id]?.name || e.id), e.id);
+      const prev = slotCounts(lastSlots);
+      const now = slotCounts(inv);
+      for (const id of Object.keys(now)) {
+        const d = now[id] - (prev[id] || 0);
+        if (d > 0) pushPickup('+' + d + ' ' + (ITEMS[id]?.name || id), id);
       }
     }
-    lastInv = inv;
+    lastSlots = inv;
     updateHotbar(inv);
     updateCraft(inv);
-    updatePanel(lastInv, lastStats);
-    renderer.hasBoat = hasBoat(inv);
+    updatePanel(lastSlots, lastStats);
+    updateChestInv(lastSlots);
+    renderer.hasBoat = countIn(inv, 'boat') > 0;
   };
 
   worker.onmessage = (e: MessageEvent<SimMsg>) => {
@@ -101,7 +100,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
         renderer.setLayer(m.loc, m.caveSeed);
         initMinimap(m.seed);
         lastStats = m.stats;
-        refreshInv(m.inventory, true);
+        refreshInv(m.inv, true);
         break;
       case 'snapshot':
         renderer.setLayer(m.snap.loc, m.snap.caveSeed);
@@ -110,13 +109,16 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
         updateMinimap(m.snap.px, m.snap.py, m.snap.loc, m.snap.caveSeed);
         lastStats = m.snap.stats;
         if (m.snap.tick % 6 === 0) updateHud(m.snap.stats, m.snap.time);
-        if (isPanelOpen()) updatePanel(lastInv, lastStats);
+        if (m.snap.tick % 6 === 0 && isPanelOpen()) updatePanelStats(lastStats);
         break;
       case 'harvest':
         renderer.onHarvest(m.x, m.y, m.depleted);
         break;
       case 'inventory':
-        refreshInv(m.inventory);
+        refreshInv(m.inv);
+        break;
+      case 'chest':
+        setChestItems(m.id, m.items);
         break;
       case 'structures':
         renderer.setStructures(m.structures);
@@ -138,6 +140,11 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   renderer.onInteract = (active, target) => worker.postMessage({ t: 'interact', active, target });
   renderer.onPlace = (x, y, item) => worker.postMessage({ t: 'place', item, x, y });
   renderer.onOpenStation = (type) => openStationCraft(type);
+  renderer.onOpenChest = (id) => { worker.postMessage({ t: 'openChest', id }); openChestPanel(id, lastSlots); };
+
+  const sendMove = (from: import('./shared/protocol').InvAddr, to: import('./shared/protocol').InvAddr): void => worker.postMessage({ t: 'move', from, to });
+  initPanel({ onMove: sendMove, onSort: () => worker.postMessage({ t: 'sortInv' }) });
+  initChest({ onMove: sendMove, onSortInv: () => worker.postMessage({ t: 'sortInv' }), onSortChest: (id) => worker.postMessage({ t: 'sortChest', id }) });
 
   initHotbar((sel: HotbarSel) => {
     renderer.selected = sel;
@@ -165,7 +172,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
     if (a === 'pause') { togglePause(); return; }
     if (isPaused()) return; // el resto de acciones se bloquean en pausa
     switch (a) {
-      case 'inventory': togglePanel(); updatePanel(lastInv, lastStats); break;
+      case 'inventory': togglePanel(); updatePanel(lastSlots, lastStats); break;
       case 'craft': toggleCraft(); break;
       case 'map': toggleBigMap(); break;
       case 'jump': renderer.jump(); break;

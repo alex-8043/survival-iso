@@ -157,6 +157,20 @@
       .ing { display: inline-flex; align-items: center; gap: 3px; }
       .ing-ic { width: 15px; height: 15px; background-size: contain; background-repeat: no-repeat; background-position: center; }
       .craft-empty { opacity: .7; font-size: 13px; }
+
+      /* Arrastrar/ordenar ranuras + cofre */
+      .inv-headrow { display: flex; align-items: center; justify-content: space-between; margin: 2px 0 10px; }
+      .inv-headrow h3 { margin: 0; }
+      .sort-btn { background: rgba(245,201,107,.16); color: var(--gold); border: 1px solid var(--line); border-radius: 7px; padding: 5px 12px; font-size: 12px; font-weight: 700; cursor: pointer; }
+      .sort-btn:hover { background: rgba(245,201,107,.28); }
+      .islot { cursor: grab; touch-action: none; }
+      .islot:active { cursor: grabbing; }
+      .drag-ghost { position: fixed; width: 34px; height: 34px; margin-left: -17px; margin-top: -17px; background-size: contain; background-repeat: no-repeat; background-position: center; pointer-events: none; z-index: 100000; filter: drop-shadow(0 3px 5px rgba(0,0,0,.5)); }
+
+      /* Panel del cofre */
+      #chest { position: fixed; inset: 0; z-index: 43; display: none; align-items: center; justify-content: center; background: rgba(6,10,6,.6); }
+      .chest-card { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; width: min(520px, 94vw); max-height: 92vh; overflow: auto; }
+      .chest-card h3 { margin: 0; }
     </style>
   </head>
   <body>
