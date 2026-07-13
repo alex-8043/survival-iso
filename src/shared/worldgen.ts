@@ -115,7 +115,6 @@ export type NodeKind = 'tree' | 'rock' | 'coal' | 'iron' | 'gold' | 'diamond';
 
 export function nodeAt(x: number, y: number, seed: number): NodeKind | null {
   if (springAt(x, y, seed)) return null; // no árboles sobre manantiales
-  if (pitDepthAt(x, y, seed) > 0) return null; // ni árboles ni rocas dentro de un hoyo/cueva
   const t = tileAt(x, y, seed).terrain;
   const r = hash2(x, y, (seed ^ 0x777) | 0);
   if (t === TERRAIN.JUNGLE && r < 0.42) return 'tree';
@@ -129,7 +128,6 @@ export function nodeAt(x: number, y: number, seed: number): NodeKind | null {
 // Decoración de superficie no interactiva por bioma.
 export type SurfaceDecor = 'cactus' | 'reed' | 'deadbush' | 'fern' | 'lily' | 'vine';
 export function surfaceDecorAt(x: number, y: number, seed: number): SurfaceDecor | null {
-  if (pitDepthAt(x, y, seed) > 0) return null; // los hoyos van despejados
   const t = tileAt(x, y, seed);
   const r = hash2(x, y, (seed ^ 0x2de) | 0);
   if (t.terrain === TERRAIN.SWAMP_WATER) return r < 0.16 ? 'lily' : null; // nenúfares
@@ -159,72 +157,11 @@ export function playerBlocked(_terrain: Terrain): boolean {
 
 export const CAVE_R = 54; // radio máximo posible (bound para bucles)
 
-// (Antiguo sistema de cuevas por teleport — DESACTIVADO.) Ya no hay bocas de cueva:
-// las cuevas son ahora hoyos físicos en el terreno (pitDepthAt) por los que se baja
-// andando/picando. Se mantiene la firma para no romper importaciones.
-export function caveEntranceAt(_x: number, _y: number, _seed: number): boolean {
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// Cuevas-agujero: hoyos naturales en el terreno. Un hoyo es un CUENCO escalonado
-// (Chebyshev): el centro es lo más hondo y cada anillo hacia fuera sube 1 bloque,
-// para poder bajar y subir CAMINANDO (colisión: se sube 1 bloque andando). Al picar
-// hacia el fondo aparecen minerales cada vez mejores (por profundidad absoluta).
-// ---------------------------------------------------------------------------
-const PIT_CELL = 40;      // rejilla de dispersión (un candidato por celda)
-const PIT_PROB = 0.14;    // probabilidad de que una celda tenga hoyo
-const PIT_RADIUS = 8;     // radio del cuenco (en bloques)
-const PIT_MAX_DEPTH = 9;  // profundidad en el centro (llega a la roca madre)
-
-function pitCenterInCell(cx: number, cy: number, seed: number): { x: number; y: number } | null {
-  if (hash2(cx, cy, (seed ^ 0x9173) | 0) > PIT_PROB) return null;
-  const ox = Math.floor(hash2(cx, cy, (seed ^ 0x1a2b) | 0) * PIT_CELL);
-  const oy = Math.floor(hash2(cx, cy, (seed ^ 0x3c4d) | 0) * PIT_CELL);
-  return { x: cx * PIT_CELL + ox, y: cy * PIT_CELL + oy };
-}
-
-// Profundidad del hoyo en (x,y) — 0 si no hay hoyo. Sólo hashes (barato).
-export function pitDepthAt(x: number, y: number, seed: number): number {
-  const cx = Math.floor(x / PIT_CELL), cy = Math.floor(y / PIT_CELL);
-  let best = 0;
-  for (let ax = -1; ax <= 1; ax++) for (let ay = -1; ay <= 1; ay++) {
-    const c = pitCenterInCell(cx + ax, cy + ay, seed);
-    if (!c) continue;
-    const dist = Math.max(Math.abs(x - c.x), Math.abs(y - c.y)); // Chebyshev -> escalones limpios
-    if (dist > PIT_RADIUS) continue;
-    const depth = PIT_MAX_DEPTH - dist;
-    if (depth > best) best = depth;
-  }
-  return best;
-}
-
-// ¿Es (x,y) el centro exacto de un hoyo? (para marcar en el minimapa)
-export function pitCenterAt(x: number, y: number, seed: number): boolean {
-  const cx = Math.floor(x / PIT_CELL), cy = Math.floor(y / PIT_CELL);
-  const c = pitCenterInCell(cx, cy, seed);
-  return !!c && c.x === x && c.y === y;
-}
-
-// Nivel base del terreno con los hoyos ya excavados (antes de ediciones del jugador).
-export function baseLevelAt(x: number, y: number, seed: number): number {
-  const t = tileAt(x, y, seed);
-  if (t.water) return t.level; // el agua no se carva
-  const pit = pitDepthAt(x, y, seed);
-  return pit > 0 ? Math.max(BEDROCK_LEVEL, t.level - pit) : t.level;
-}
-
-// Mineral del subsuelo según la PROFUNDIDAD ABSOLUTA (nivel <= 0). Cuanto más
-// hondo, mejor: carbón (poco hondo) -> hierro -> oro -> diamante (junto a la roca madre).
-export function subsurfaceOreAt(x: number, y: number, lvl: number, seed: number): NodeKind | null {
-  if (lvl > 0) return null;
-  const depth = -lvl; // 0 en el nivel del mar .. 6 en la roca madre
-  const r = hash2(x, y, (seed ^ Math.imul(lvl, 0x9e3779b1) ^ 0x0e) | 0);
-  if (depth >= 5 && r < 0.07) return 'diamond'; // lo más profundo y raro
-  if (depth >= 4 && r < 0.11) return 'gold';
-  if (depth >= 2 && r < 0.17) return 'iron';
-  if (depth >= 1 && r < 0.24) return 'coal';     // carbón: cerca de la superficie
-  return null;
+// Entradas de cueva: raras, en cualquier tierra (no en el agua). Se dibujan como
+// un agujero pequeño en el suelo (ver renderer.drawEntrance) y se entra andando.
+export function caveEntranceAt(x: number, y: number, seed: number): boolean {
+  if (tileAt(x, y, seed).water) return false;
+  return hash2(x, y, (seed ^ 0x5eed) | 0) < 0.0016;
 }
 
 // Aldeas: raras (más que antes), en llano de hierba/bosque.

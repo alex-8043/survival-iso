@@ -24,7 +24,7 @@ import {
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
-import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN, MAX_BLOCK, BEDROCK_LEVEL, WATER_SURFACE, terrainTopMaterial, materialItem, subsurfaceMaterial, baseLevelAt, subsurfaceOreAt, pitDepthAt, villageLayoutAt, isHouseWall, nearestVillage, VILLAGE_SCAN } from '../shared/worldgen';
+import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN, MAX_BLOCK, BEDROCK_LEVEL, WATER_SURFACE, terrainTopMaterial, materialItem, subsurfaceMaterial, villageLayoutAt, isHouseWall, nearestVillage, VILLAGE_SCAN } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
 import type { TerrainEdit, FluidEdit } from '../shared/protocol';
 import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor } from '../shared/items';
@@ -83,6 +83,7 @@ export interface Sim {
   villageWalls: Set<string>; // muros macizos de la aldea cacheada
   villageBlocked: Set<string>; // tiles de casa/cultivo (sin árboles encima)
   villagesLooted: Set<string>; // aldeas cuyo cofre ya se generó
+  torches: Set<string>; // antorchas colocadas (clave con capa: 'c<seed>:x,y' o 's:x,y')
 }
 
 export interface StepResult {
@@ -114,6 +115,21 @@ function activeNodeAt(sim: Sim, x: number, y: number): NodeKind | null {
 function nodeKeyOf(sim: Sim, x: number, y: number): string {
   return sim.location === 'cave' ? 'c' + sim.caveSeed + ':' + x + ',' + y : keyOf(x, y);
 }
+// Prefijo de capa para antorchas ('c<seed>:' en cueva, 's:' en superficie).
+function torchPrefix(sim: Sim): string {
+  return sim.location === 'cave' ? 'c' + sim.caveSeed + ':' : 's:';
+}
+// Antorchas de la capa actual (posiciones), para pintarlas/iluminar en el cliente.
+export function torchList(sim: Sim): { x: number; y: number }[] {
+  const prefix = torchPrefix(sim);
+  const out: { x: number; y: number }[] = [];
+  for (const k of sim.torches) {
+    if (!k.startsWith(prefix)) continue;
+    const [xs, ys] = k.slice(prefix.length).split(',');
+    out.push({ x: +xs, y: +ys });
+  }
+  return out;
+}
 // ¿El jugador está sobre una entrada (superficie) o la salida (cueva)?
 export function onEntranceOf(sim: Sim): boolean {
   const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
@@ -142,6 +158,7 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     caveCooldown: 0, wasOnEntrance: false, jumpTimer: 0, dead: false,
     edits: new Map(), fluids: new Map(), floodQueue: [],
     village: null, villageWalls: new Set(), villageBlocked: new Set(), villagesLooted: new Set(),
+    torches: new Set(),
   };
 }
 
@@ -175,6 +192,7 @@ export function createSimFromSave(save: SaveState): Sim {
   if (save.edits) for (const [k, v] of save.edits) sim.edits.set(k, { lvl: v.lvl, top: v.top });
   if (save.fluids) for (const [k, v] of save.fluids) sim.fluids.set(k, v);
   if (save.villagesLooted) for (const k of save.villagesLooted) sim.villagesLooted.add(k);
+  if (save.torches) for (const k of save.torches) sim.torches.add(k);
   if (sim.location === 'surface') for (let i = 0; i < 4; i++) trySpawnAnimal(sim);
   return sim;
 }
@@ -196,6 +214,7 @@ export function serializeSim(sim: Sim): SaveState {
     edits: [...sim.edits.entries()].map(([k, v]) => [k, { lvl: v.lvl, top: v.top }] as [string, { lvl: number; top: string }]),
     fluids: [...sim.fluids.entries()],
     villagesLooted: [...sim.villagesLooted],
+    torches: [...sim.torches],
   };
 }
 
@@ -229,25 +248,10 @@ function structureAt(sim: Sim, x: number, y: number): Structure | undefined {
   return sim.structures.find((s) => s.x === x && s.y === y);
 }
 
-// Nivel efectivo (con ediciones de terreno y hoyos naturales) de una tile.
+// Nivel efectivo (con ediciones de terreno) de una tile de superficie.
 function effLevel(sim: Sim, x: number, y: number): number {
   const e = sim.edits.get(keyOf(x, y));
-  return e ? e.lvl : baseLevelAt(x, y, sim.seed);
-}
-
-// Contenido del bloque superior de una tile: mineral (según profundidad) o
-// material normal. tier = nivel de pico necesario (0 = mano vale, 1/2/3 = pico).
-function blockContent(sim: Sim, x: number, y: number): { ore: NodeKind | null; item: string; tier: number } {
-  const cur = effLevel(sim, x, y);
-  const ore = cur <= 0 ? subsurfaceOreAt(x, y, cur, sim.seed) : null;
-  if (ore) {
-    const tier = ore === 'coal' ? 1 : ore === 'iron' ? 2 : 3;
-    return { ore, item: NODE_KINDS[ore].item, tier };
-  }
-  const base = tileAt(x, y, sim.seed);
-  const e = sim.edits.get(keyOf(x, y));
-  const item = materialItem(e ? e.top : terrainTopMaterial(base.terrain));
-  return { ore: null, item, tier: item === 'stone' ? 1 : 0 };
+  return e ? e.lvl : tileAt(x, y, sim.seed).level;
 }
 // ¿Hay agua o fluido dinámico en la tile de superficie?
 function effWater(sim: Sim, x: number, y: number): boolean {
@@ -531,13 +535,10 @@ function harvestNeed(sim: Sim, tgt: NonNullable<InteractTarget>): number {
     if (sim.location === 'cave' || Math.hypot(tgt.x - px, tgt.y - py) > INTERACT_RANGE) return 0;
     if (effWater(sim, tgt.x, tgt.y) || structureAt(sim, tgt.x, tgt.y)) return 0;
     if (effLevel(sim, tgt.x, tgt.y) <= BEDROCK_LEVEL) return 0;
-    const c = blockContent(sim, tgt.x, tgt.y);
-    if (c.ore) { // mineral: exige el pico adecuado y tarda algo más
-      if (!(tool && tool.kind === 'pickaxe' && tool.tier >= c.tier)) return -1;
-      const mult = c.ore === 'diamond' ? 2.4 : c.ore === 'gold' ? 2.0 : c.ore === 'iron' ? 1.7 : 1.4;
-      return (HARVEST_COOLDOWN * mult) / tool!.speed;
-    }
-    if (c.item === 'stone') { if (!(tool && tool.kind === 'pickaxe')) return -1; return HARVEST_COOLDOWN / tool!.speed; }
+    const base = tileAt(tgt.x, tgt.y, sim.seed);
+    const e = sim.edits.get(keyOf(tgt.x, tgt.y));
+    const item = materialItem(e ? e.top : terrainTopMaterial(base.terrain));
+    if (item === 'stone') { if (!(tool && tool.kind === 'pickaxe')) return -1; return HARVEST_COOLDOWN / tool!.speed; }
     return HARVEST_COOLDOWN * 3.4; // tierra/arena/nieve a mano: bastante lento (no se autopica)
   }
   const an = sim.animals.find((a) => a.id === tgt.id && a.alive);
@@ -752,6 +753,18 @@ export function place(sim: Sim, item: string, x: number, y: number): { ok: boole
   if (def.place === 'terrain') return placeTerrain(sim, item, x, y);
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
+  // Antorcha: se puede poner en la cueva (para iluminar) y en la superficie.
+  if (def.place === 'torch') {
+    if (Math.hypot(x - px, y - py) > 4.5) return { ok: false };
+    if (sim.location === 'cave') {
+      if (!caveTile(x, y, sim.caveSeed).passable) return { ok: false, floater: { text: 'Ahí no cabe la antorcha', color: 0xff8a8a, x, y } };
+    } else if (isWater(tileAt(x, y, sim.seed).terrain) || structureAt(sim, x, y)) return { ok: false };
+    const k = torchPrefix(sim) + x + ',' + y;
+    if (sim.torches.has(k)) return { ok: false };
+    sim.torches.add(k);
+    takeFrom(sim.inv, item, 1);
+    return { ok: true };
+  }
   if (sim.location === 'cave') return { ok: false, floater: { text: 'No puedes construir en la cueva', color: 0xff8a8a, x: px, y: py } };
   if (Math.hypot(x - px, y - py) > 4.5) return { ok: false };
   const terr = tileAt(x, y, sim.seed).terrain;
@@ -796,28 +809,21 @@ export function dig(sim: Sim, x: number, y: number): { ok: boolean; floater?: Fl
   const cur = effLevel(sim, x, y);
   if (cur <= BEDROCK_LEVEL) return { ok: false, floater: { text: 'Roca madre', color: 0xff8a8a, x, y } };
   const base = tileAt(x, y, sim.seed);
-  const c = blockContent(sim, x, y);
-  const tool = toolFor(sim.activeTool);
-  if (c.ore) { // minerales del subsuelo: exigen el pico adecuado
-    if (!(tool && tool.kind === 'pickaxe' && tool.tier >= c.tier)) {
-      const need = c.tier >= 3 ? 'pico de hierro' : c.tier === 2 ? 'pico de piedra' : 'un pico';
-      return { ok: false, floater: { text: 'Necesitas ' + need, color: 0xff8a8a, x, y }, sfx: 'hit:stone' };
-    }
-  } else if (c.item === 'stone') {
+  const e = sim.edits.get(keyOf(x, y));
+  const topMat = e ? e.top : terrainTopMaterial(base.terrain);
+  const item = materialItem(topMat);
+  if (item === 'stone') {
+    const tool = toolFor(sim.activeTool);
     if (!(tool && tool.kind === 'pickaxe')) return { ok: false, floater: { text: 'Necesitas un pico', color: 0xff8a8a, x, y }, sfx: 'hit:stone' };
   }
   const newLvl = cur - 1;
-  // Material del nuevo suelo: si a esa profundidad hay mineral, se ve el mineral;
-  // si no, el subsuelo normal (tierra cerca de la superficie, piedra más hondo).
-  const floorOre = newLvl <= 0 ? subsurfaceOreAt(x, y, newLvl, sim.seed) : null;
-  const newTop = floorOre ?? subsurfaceMaterial(base.terrain, base.level - newLvl);
+  const newTop = subsurfaceMaterial(base.terrain, base.level - newLvl);
   sim.edits.set(keyOf(x, y), { lvl: newLvl, top: newTop });
-  addItem(sim, c.item, 1);
+  addItem(sim, item, 1);
   if (newLvl <= WATER_SURFACE) { // ¿queda al nivel del agua junto a un fluido? -> inunda
     for (const [ox, oy] of NB4) if (effWater(sim, x + ox, y + oy)) { sim.floodQueue.push({ x, y }); break; }
   }
-  const sfxMat = c.ore ? nodeSfxMaterial(c.ore) : c.item;
-  return { ok: true, sfx: 'break:' + sfxMat, edit: { x, y, lvl: newLvl, top: newTop }, item: c.item };
+  return { ok: true, sfx: 'break:' + item, edit: { x, y, lvl: newLvl, top: newTop }, item };
 }
 
 // Coloca un bloque de terreno (sube el nivel 1) con el material dado.

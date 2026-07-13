@@ -1,7 +1,7 @@
 // Minimapa cenital: siempre visible arriba-izquierda y versión grande con M.
 // Muestrea el mundo determinista alrededor del jugador.
 
-import { tileAt, caveTile, caveNodeAt, springAt, villageCenterAt, pitDepthAt, pitCenterAt, TERRAIN, type Terrain } from '../shared/worldgen';
+import { tileAt, caveTile, caveNodeAt, caveEntranceAt, springAt, villageCenterAt, TERRAIN, type Terrain } from '../shared/worldgen';
 import type { Location } from '../shared/protocol';
 
 const TCOL: Record<number, number> = {
@@ -38,10 +38,7 @@ function colorAt(wx: number, wy: number, loc: Location, caveSeed: number): numbe
   }
   if (springAt(wx, wy, seed)) return 0x66e0ff;
   const t: Terrain = tileAt(wx, wy, seed).terrain;
-  const base = TCOL[t] ?? 0x5a9e4f;
-  const pit = pitDepthAt(wx, wy, seed); // los hoyos se ven como depresiones oscuras
-  if (pit > 0) { const f = Math.max(0.28, 1 - pit * 0.11); return (((base >> 16 & 0xff) * f) << 16 | ((base >> 8 & 0xff) * f) << 8 | (base & 0xff) * f) & 0xffffff; }
-  return base;
+  return TCOL[t] ?? 0x5a9e4f;
 }
 
 function draw(cv: HTMLCanvasElement, R: number, tp: number, px: number, py: number, loc: Location, caveSeed: number): void {
@@ -54,10 +51,10 @@ function draw(cv: HTMLCanvasElement, R: number, tp: number, px: number, py: numb
     ctx.fillStyle = hexStr(colorAt(wx, wy, loc, caveSeed));
     ctx.fillRect((dx + R) * tp, (dy + R) * tp, tp, tp);
     if (loc === 'surface') {
-      if (pitCenterAt(wx, wy, seed)) { // marca de cueva-agujero (punto negro con borde)
+      if (caveEntranceAt(wx, wy, seed)) { // entrada de cueva (marca oscura con borde)
         ctx.fillStyle = '#0a0a0e';
         ctx.fillRect((dx + R) * tp - 2, (dy + R) * tp - 2, tp + 4, tp + 4);
-        ctx.strokeStyle = '#d0d0d0'; ctx.lineWidth = 1;
+        ctx.strokeStyle = '#c9c9c9'; ctx.lineWidth = 1;
         ctx.strokeRect((dx + R) * tp - 2, (dy + R) * tp - 2, tp + 4, tp + 4);
       } else if (villageCenterAt(wx, wy, seed)) {
         ctx.fillStyle = '#e07b3a';

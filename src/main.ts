@@ -151,6 +151,9 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
       case 'terrain':
         renderer.applyTerrain(m.edits, m.fluids);
         break;
+      case 'torches':
+        renderer.setTorches(m.list);
+        break;
       case 'floater':
         renderer.spawnFloat(m.text, m.color, m.x, m.y);
         break;

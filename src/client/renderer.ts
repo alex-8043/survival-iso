@@ -4,7 +4,7 @@
 import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js';
 import { TILE_W, TILE_H, MAX_ELEV_PX, BLOCK_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
-import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, villageCenterAt, villageLayoutAt, isHouseWall, isHouseInterior, VILLAGE_SCAN, BEDROCK_LEVEL, baseLevelAt, subsurfaceMaterial, subsurfaceOreAt, type CaveTile, type VillageHouse } from '../shared/worldgen';
+import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, villageCenterAt, villageLayoutAt, isHouseWall, isHouseInterior, VILLAGE_SCAN, BEDROCK_LEVEL, type CaveTile, type VillageHouse } from '../shared/worldgen';
 import { avatarCanvas, type AvatarAction, type Customization, type HeldTool } from './avatar';
 import { ITEMS } from '../shared/items';
 import type { InteractTarget, Snapshot, Structure, Location, TerrainEdit, FluidEdit } from '../shared/protocol';
@@ -21,8 +21,6 @@ const TERRAIN_COLORS: Record<number, number> = {
 // Colores de materiales para bloques editados (excavados/colocados).
 const MATERIAL_COLORS: Record<string, number> = {
   dirt: 0x7a5433, sand: 0xd9c48a, stone: 0x8f8b7c, snow: 0xe9edf2, grass: 0x5a9e4f,
-  // Minerales del subsuelo (piedra tintada, vistosa para localizarlos al excavar).
-  coal: 0x3b3b42, iron: 0xb0906f, gold: 0xd4b64e, diamond: 0x5ec7cc,
 };
 const ANIM_FRAMES: Record<AvatarAction, number> = { idle: 1, walk: 6, run: 6, swing: 6, swim: 6 };
 const ANIM_RATE: Record<AvatarAction, number> = { idle: 0.5, walk: 1.5, run: 2.6, swing: 2.2, swim: 1.3 };
@@ -58,6 +56,11 @@ export class GameRenderer {
   readonly depleted = new Set<string>();
   jumpOff = 0; jumpVel = 0;
   harvestActive = false; harvestProgress = 0; // barra de picado (desde el snapshot)
+
+  // Antorchas: objeto (en el mundo) + resplandor (en pantalla, sobre la oscuridad).
+  readonly torches = new Map<string, { obj: Container; glow: Sprite; x: number; y: number }>();
+  readonly torchLayer = new Container();
+  torchGlowTex: Texture | null = null;
 
   // Cámara: zoom (rueda), suavizado de desnivel y paneo (clic rueda).
   zoom = 1; camLift = 0; panX = 0; panY = 0;
@@ -125,6 +128,7 @@ export class GameRenderer {
     this.caveDark = new Sprite(Texture.EMPTY);
     this.caveDark.visible = false;
     this.app.stage.addChild(this.caveDark);
+    this.app.stage.addChild(this.torchLayer); // resplandores por encima de la oscuridad
     this.exitMarker = this.makeExitMarker();
     this.exitMarker.visible = false;
     this.app.stage.addChild(this.exitMarker);
@@ -252,17 +256,26 @@ export class GameRenderer {
     if (!first) this.showTransition();
   }
 
-  // Parpadeo breve al bajar/subir de la cueva (no una pantalla de carga).
+  // Al entrar/salir de la cueva se DIFUMINA el mundo (desenfoque + atenuado) y la
+  // cueva entra en foco. No es una pantalla negra de carga: es un enfoque suave.
   private showTransition(): void {
+    const cv = this.app.canvas;
     let el = document.getElementById('cave-fade');
     if (!el) { el = document.createElement('div'); el.id = 'cave-fade'; document.body.appendChild(el); }
     const e = el;
+    cv.style.transition = 'none';
+    cv.style.filter = 'blur(14px) brightness(0.72)';
     e.style.transition = 'none';
-    e.style.opacity = '0.72';
+    e.style.opacity = '0.55';
     e.style.display = 'block';
-    void e.offsetWidth; // fuerza reflow
-    requestAnimationFrame(() => { e.style.transition = 'opacity .28s ease'; e.style.opacity = '0'; });
-    window.setTimeout(() => { e.style.display = 'none'; }, 320);
+    void cv.offsetWidth; // fuerza reflow
+    requestAnimationFrame(() => {
+      cv.style.transition = 'filter .5s ease';
+      cv.style.filter = 'blur(0px) brightness(1)';
+      e.style.transition = 'opacity .5s ease';
+      e.style.opacity = '0';
+    });
+    window.setTimeout(() => { e.style.display = 'none'; cv.style.filter = ''; cv.style.transition = ''; }, 560);
   }
 
   jump(): void {
@@ -281,16 +294,7 @@ export class GameRenderer {
   // Nivel/agua efectivos con ediciones de terreno (superficie).
   private effLevelAt(x: number, y: number): number {
     const e = this.edits.get(x + ',' + y);
-    return e ? e.lvl : baseLevelAt(x, y, this.seed);
-  }
-  // Color del tope de una tile SIN editar: si está por debajo de su superficie
-  // original (hoyo natural) muestra subsuelo/mineral; si no, el color del bioma.
-  private topColorAt(x: number, y: number, terrain: number, origLevel: number, lvl: number): number {
-    if (lvl < origLevel) {
-      const ore = lvl <= 0 ? subsurfaceOreAt(x, y, lvl, this.seed) : null;
-      return MATERIAL_COLORS[ore ?? subsurfaceMaterial(terrain as never, origLevel - lvl)] ?? 0x8f8b7c;
-    }
-    return TERRAIN_COLORS[terrain] ?? 0x5a9e4f;
+    return e ? e.lvl : tileAt(x, y, this.seed).level;
   }
   private effWaterAt(x: number, y: number): boolean {
     const k = x + ',' + y;
@@ -346,6 +350,79 @@ export class GameRenderer {
       }
     }
     for (const [id, sp] of this.structs) if (!seen.has(id)) { this.entities.removeChild(sp); sp.destroy(); this.structs.delete(id); }
+  }
+
+  // Antorchas de la capa actual (recibidas del sim). Cada una: objeto en el mundo
+  // + un resplandor cálido que ilumina la oscuridad de la cueva (o la noche).
+  setTorches(list: { x: number; y: number }[]): void {
+    const seen = new Set<string>();
+    for (const t of list) {
+      const key = t.x + ',' + t.y;
+      seen.add(key);
+      if (!this.torches.has(key)) {
+        const obj = this.makeTorch();
+        this.entities.addChild(obj);
+        const glow = new Sprite(this.ensureGlowTex());
+        glow.anchor.set(0.5);
+        glow.blendMode = 'add';
+        glow.tint = 0xffb060;
+        glow.visible = false;
+        this.torchLayer.addChild(glow);
+        this.torches.set(key, { obj, glow, x: t.x, y: t.y });
+      }
+    }
+    for (const [key, rt] of this.torches) if (!seen.has(key)) {
+      this.entities.removeChild(rt.obj); rt.obj.destroy({ children: true });
+      this.torchLayer.removeChild(rt.glow); rt.glow.destroy();
+      this.torches.delete(key);
+    }
+  }
+
+  private makeTorch(): Container {
+    const c = new Container();
+    const g = new Graphics();
+    g.rect(-1.4, -6, 2.8, 12).fill({ color: 0x6b4a2a });      // palo
+    g.rect(-2.4, -10, 4.8, 4).fill({ color: 0x2f2114 });       // soporte
+    g.ellipse(0, -12, 3, 5).fill({ color: 0xff8a1e });         // llama
+    g.ellipse(0, -13, 1.7, 3).fill({ color: 0xffe488 });       // núcleo de la llama
+    c.addChild(g);
+    return c;
+  }
+
+  private ensureGlowTex(): Texture {
+    if (this.torchGlowTex) return this.torchGlowTex;
+    const S = 256;
+    const cv = document.createElement('canvas');
+    cv.width = S; cv.height = S;
+    const ctx = cv.getContext('2d')!;
+    const grad = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    grad.addColorStop(0, 'rgba(255,255,255,0.72)');
+    grad.addColorStop(0.4, 'rgba(255,255,255,0.24)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, S, S);
+    this.torchGlowTex = Texture.from(cv);
+    return this.torchGlowTex;
+  }
+
+  private updateTorches(): void {
+    if (!this.torches.size) return;
+    const z = this.zoom;
+    const caveLit = this.loc === 'cave';
+    const glowA = caveLit ? 0.6 : Math.min(0.75, this.nightAlpha(this.tod) * 1.3);
+    const flick = 0.9 + 0.1 * Math.sin(this.animT * Math.PI * 6);
+    for (const rt of this.torches.values()) {
+      const s = gridToScreen(rt.x, rt.y);
+      const elev = this.elevAtL(rt.x, rt.y) * MAX_ELEV_PX;
+      rt.obj.x = s.x; rt.obj.y = s.y - elev; rt.obj.zIndex = depthOf(rt.x, rt.y) + 0.05;
+      const on = glowA > 0.03;
+      rt.glow.visible = on;
+      if (on) {
+        rt.glow.x = this.world.x + s.x * z;
+        rt.glow.y = this.world.y + (s.y - elev - 10) * z;
+        rt.glow.alpha = glowA * flick;
+        rt.glow.scale.set(z * 1.1 * flick);
+      }
+    }
   }
 
   onHarvest(x: number, y: number, depleted: boolean): void {
@@ -608,8 +685,8 @@ export class GameRenderer {
             g.poly([s.x, s.y - hh, s.x + hw, s.y, s.x, s.y + hh, s.x - hw, s.y]).fill({ color: col });
             g.poly([s.x, s.y - hh * 0.5, s.x + hw * 0.5, s.y, s.x, s.y + hh * 0.5, s.x - hw * 0.5, s.y]).fill({ color: swamp ? 0x556b3a : 0x4f93c4, alpha: swamp ? 0.4 : 0.5 });
           } else {
-            const lvl = edit ? edit.lvl : baseLevelAt(x, y, this.seed);
-            const base = edit ? (MATERIAL_COLORS[edit.top] ?? TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f) : this.topColorAt(x, y, info.terrain, info.level, lvl);
+            const lvl = edit ? edit.lvl : info.level;
+            const base = edit ? (MATERIAL_COLORS[edit.top] ?? TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f) : (TERRAIN_COLORS[info.terrain] ?? 0x5a9e4f);
             const topY = s.y - lvl * BLOCK_PX;
             const rLvl = this.effWaterAt(x + 1, y) ? 0 : this.effLevelAt(x + 1, y);
             const lLvl = this.effWaterAt(x, y + 1) ? 0 : this.effLevelAt(x, y + 1);
@@ -627,29 +704,26 @@ export class GameRenderer {
               for (let i = 1; i < n; i++) { const yy = topY + i * BLOCK_PX; g.moveTo(s.x - hw, yy); g.lineTo(s.x, yy + hh); g.stroke({ width: 1, color: 0x000000, alpha: 0.13 }); }
             }
             g.poly([s.x, topY - hh, s.x + hw, topY, s.x, topY + hh, s.x - hw, topY]).fill({ color: base });
-            // (Las bocas de cueva se han eliminado: ahora las cuevas son hoyos reales.)
-            if (!edit && springAt(x, y, this.seed)) this.drawSpring(g, s.x, topY);
+            if (!edit && caveEntranceAt(x, y, this.seed)) this.drawEntrance(g, s.x, topY);
+            else if (!edit && springAt(x, y, this.seed)) this.drawSpring(g, s.x, topY);
           }
         }
       }
     }
   }
 
+  // Entrada de cueva PEQUEÑA y discreta: un agujero oscuro en el suelo con un
+  // borde de tierra/piedra alrededor. Nada de montículos grandes.
   private drawEntrance(g: Graphics, cx: number, topY: number): void {
-    const my = topY - 1;
-    // montículo rocoso con rocas alrededor
-    g.ellipse(cx, my + 3, 18, 9).fill({ color: 0x574f47 });
-    g.ellipse(cx - 3, my - 8, 14, 12).fill({ color: 0x746c62 });
-    g.ellipse(cx + 8, my - 3, 8, 8).fill({ color: 0x655d54 });
-    g.ellipse(cx - 10, my - 1, 6, 6).fill({ color: 0x6b6259 });
-    g.ellipse(cx + 2, my - 13, 7, 6).fill({ color: 0x7d746a });
-    // boca de la cueva: arco oscuro (semielipse + base)
-    g.ellipse(cx, my - 2, 9, 8).fill({ color: 0x17120f });
-    g.rect(cx - 9, my - 2, 18, 6).fill({ color: 0x17120f });
-    g.ellipse(cx, my - 2, 6.5, 6).fill({ color: 0x060409 });
-    g.rect(cx - 6.5, my - 2, 13, 6).fill({ color: 0x060409 });
-    // brillo tenue del borde
-    g.ellipse(cx, my - 2, 9, 8).stroke({ width: 1.4, color: 0xa89a82, alpha: 0.35 });
+    const hw = TILE_W / 2, hh = TILE_H / 2;
+    // borde terroso siguiendo el rombo de la tile
+    g.poly([cx, topY - hh * 0.78, cx + hw * 0.82, topY, cx, topY + hh * 0.78, cx - hw * 0.82, topY]).fill({ color: 0x5b4a38 });
+    // agujero oscuro (rombo interior)
+    g.poly([cx, topY - hh * 0.56, cx + hw * 0.6, topY, cx, topY + hh * 0.56, cx - hw * 0.6, topY]).fill({ color: 0x120d0a });
+    g.poly([cx, topY - hh * 0.34, cx + hw * 0.36, topY, cx, topY + hh * 0.34, cx - hw * 0.36, topY]).fill({ color: 0x040308 });
+    // un par de piedritas al borde
+    g.ellipse(cx - hw * 0.55, topY - 1, 2.4, 1.6).fill({ color: 0x746c62 });
+    g.ellipse(cx + hw * 0.5, topY + 1, 2.2, 1.5).fill({ color: 0x6b6259 });
   }
 
   private drawSpring(g: Graphics, cx: number, topY: number): void {
@@ -1076,6 +1150,7 @@ export class GameRenderer {
     }
 
     if (this.villages.size) this.updateHouseTransparency();
+    this.updateTorches();
     this.computeTarget();
     this.drawDarkness();
   }
@@ -1097,7 +1172,8 @@ export class GameRenderer {
   }
 
   private computeTarget(): void {
-    const placing = (this.selected?.kind === 'place' || this.selected?.kind === 'boat') && this.loc === 'surface';
+    // Se puede colocar en superficie; además, las antorchas también en la cueva.
+    const placing = (this.selected?.kind === 'place' || this.selected?.kind === 'boat') && (this.loc === 'surface' || this.selected?.item === 'torch');
     this.ghost.clear();
     let next: InteractTarget = null;
     this.placeTile = null;
@@ -1113,8 +1189,10 @@ export class GameRenderer {
         const item = this.selected?.item;
         const isTerrain = item ? ITEMS[item]?.place === 'terrain' : false;
         const isBoat = item === 'boat';
+        const isTorch = item === 'torch';
         const water = this.effWaterAt(t.x, t.y);
-        const valid = Math.hypot(t.x - this.prx, t.y - this.pry) <= 4.5 && (isTerrain ? true : isBoat ? water : !water);
+        const inRange = Math.hypot(t.x - this.prx, t.y - this.pry) <= 4.5;
+        const valid = inRange && (isTerrain ? true : isBoat ? water : isTorch ? (this.loc === 'cave' ? caveTile(t.x, t.y, this.caveSeed).passable : !water) : !water);
         const s = gridToScreen(t.x, t.y), yy = s.y - this.elevAtL(t.x, t.y) * MAX_ELEV_PX;
         const hw = TILE_W / 2, hh = TILE_H / 2;
         this.ghost.poly([s.x, yy - hh, s.x + hw, yy, s.x, yy + hh, s.x - hw, yy]).fill({ color: valid ? 0x8bd17c : 0xe06666, alpha: 0.35 }).stroke({ width: 2, color: valid ? 0x8bd17c : 0xe06666, alpha: 0.9 });

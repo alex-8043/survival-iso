@@ -4,7 +4,7 @@ import {
   createSim, createSimFromSave, serializeSim, stepSim, consume, drink, craft, place, board,
   timeInfo, animalSnaps, invSlots, playerPos, onWaterOf, toggleCave, onEntranceOf, bestFood,
   moveItem, quickMove, moveAmount, sortInv, sortChest, chestItems,
-  sleep, trade, acceptQuest, completeQuest, jump, respawn, harvestInfo,
+  sleep, trade, acceptQuest, completeQuest, jump, respawn, harvestInfo, torchList,
 } from './world';
 import type { Sim, StepResult } from './world';
 import { WORLD_SEED, TICK_MS } from '../shared/constants';
@@ -28,6 +28,9 @@ function postChest(id: number): void {
 function postQuests(): void {
   if (sim) post({ t: 'quests', ids: [...sim.acceptedQuests] });
 }
+function postTorches(): void {
+  if (sim) post({ t: 'torches', list: torchList(sim) });
+}
 function postTerrainAll(): void {
   if (!sim) return;
   const edits = [...sim.edits.entries()].map(([k, v]) => { const [x, y] = k.split(',').map(Number); return { x, y, lvl: v.lvl, top: v.top }; });
@@ -35,12 +38,15 @@ function postTerrainAll(): void {
   if (edits.length || fluids.length) post({ t: 'terrain', edits, fluids });
 }
 
+let lastLayerKey = '';
 function startLoop(): void {
   if (loop !== null) return;
   const dt = TICK_MS / 1000;
   loop = setInterval(() => {
     if (!sim) return;
     const r = stepSim(sim, dt);
+    const layerKey = sim.location + ':' + sim.caveSeed;
+    if (layerKey !== lastLayerKey) { lastLayerKey = layerKey; postTorches(); } // cambió de capa
     const p = playerPos(sim);
     const hi = harvestInfo(sim);
     const snap: Snapshot = {
@@ -66,6 +72,7 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     post({ t: 'ready', seed: sim.seed, inv: invSlots(sim), stats: sim.stats, structures: sim.structures, loc: sim.location, caveSeed: sim.caveSeed });
     postQuests();
     postTerrainAll();
+    postTorches();
     startLoop();
     return;
   }
@@ -80,7 +87,10 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
   } else if (m.t === 'place') {
     const r = place(sim, m.item, m.x, m.y);
     if (r.ok) {
-      if (r.edit) {
+      if (m.item === 'torch') {
+        postTorches();
+        post({ t: 'sfx', sound: 'ui:place', x: m.x, y: m.y });
+      } else if (r.edit) {
         post({ t: 'terrain', edits: [r.edit], fluids: r.fluidCleared ? [{ x: r.edit.x, y: r.edit.y, add: false }] : [] });
         post({ t: 'sfx', sound: 'ui:place', x: r.edit.x, y: r.edit.y });
       } else {

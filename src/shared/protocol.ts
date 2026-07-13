@@ -98,6 +98,7 @@ export interface SaveState {
   edits?: [string, { lvl: number; top: string }][]; // ediciones de terreno
   fluids?: [string, number][]; // celdas de fluido dinámico (1=agua)
   villagesLooted?: string[]; // aldeas cuyo cofre ya se generó
+  torches?: string[]; // antorchas colocadas (clave con prefijo de capa)
 }
 
 // Cliente -> Simulación
@@ -138,4 +139,5 @@ export type SimMsg =
   | { t: 'floater'; text: string; color: number; x: number; y: number }
   | { t: 'sfx'; sound: string; x: number; y: number }
   | { t: 'terrain'; edits: TerrainEdit[]; fluids: FluidEdit[] }
+  | { t: 'torches'; list: { x: number; y: number }[] } // antorchas de la capa actual
   | { t: 'save'; state: SaveState };
