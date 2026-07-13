@@ -6,6 +6,7 @@ import { itemSpriteURL } from './itemsprites';
 import { drawAvatar, DEFAULT_CUSTOM, type Customization } from './avatar';
 import { INV_MAIN, INV_HOTBAR, type Slot } from '../shared/inventory';
 import { enableDrag, slotHtml } from './slotdrag';
+import { durBar } from './hotbar';
 import { openSlotMenu } from './slotmenu';
 import type { InvAddr, Stats } from '../shared/protocol';
 
@@ -19,6 +20,8 @@ const STAT_ROWS = [
 let open = false;
 let custom: Customization = { ...DEFAULT_CUSTOM };
 let slots: Slot[] = [];
+let armor: Slot[] = [null, null];
+export function setPanelArmor(a: Slot[]): void { armor = a; if (open) render(); }
 let lastStats: Stats = { health: 100, food: 100, thirst: 100, stamina: 100 };
 let onMove: (from: InvAddr, to: InvAddr) => void = () => {};
 let onSort: () => void = () => {};
@@ -51,7 +54,12 @@ export function updatePanelStats(stats: Stats): void {
 
 function cell(i: number): string {
   const s = slots[i];
-  return slotHtml({ c: 'inv', i }, s ? itemSpriteURL(s.id) : null, s ? s.count : 0, s ? (ITEMS[s.id]?.name ?? s.id) : '');
+  return slotHtml({ c: 'inv', i }, s ? itemSpriteURL(s.id) : null, s ? s.count : 0, s ? (ITEMS[s.id]?.name ?? s.id) : '', s ? durBar(s) : '');
+}
+function armorCell(i: number, label: string): string {
+  const s = armor[i];
+  const extra = s ? durBar(s) : `<span class="armor-hint">${label}</span>`;
+  return slotHtml({ c: 'armor', i }, s ? itemSpriteURL(s.id) : null, s ? s.count : 0, s ? (ITEMS[s.id]?.name ?? s.id) : label, extra);
 }
 
 function render(): void {
@@ -67,12 +75,17 @@ function render(): void {
 
   const grid = Array.from({ length: INV_MAIN }, (_, i) => cell(i)).join('');
   const bar = Array.from({ length: INV_HOTBAR }, (_, i) => cell(INV_MAIN + i)).join('');
+  const totalDef = armor.reduce((n, s) => n + (s ? (ITEMS[s.id]?.defense ?? 0) : 0), 0);
 
   p.innerHTML = `
     <div class="panel-card">
       <button class="panel-close" id="panel-close" title="Cerrar">&times;</button>
       <div class="panel-left">
         <canvas id="panel-av" width="150" height="200"></canvas>
+        <div class="armor-row">
+          <div class="armor-cells">${armorCell(0, 'Casco')}${armorCell(1, 'Pechera')}</div>
+          <div class="armor-def">Defensa: <b>${totalDef}</b></div>
+        </div>
         <div class="pstats">${statsHtml}</div>
       </div>
       <div class="panel-right">

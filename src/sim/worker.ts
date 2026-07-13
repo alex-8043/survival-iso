@@ -4,7 +4,7 @@ import {
   createSim, createSimFromSave, serializeSim, stepSim, consume, drink, craft, place, board,
   timeInfo, animalSnaps, invSlots, playerPos, onWaterOf, toggleCave, onEntranceOf, bestFood,
   moveItem, quickMove, moveAmount, sortInv, sortChest, chestItems,
-  sleep, trade, acceptQuest, completeQuest, jump, respawn, harvestInfo, torchList,
+  sleep, trade, acceptQuest, completeQuest, jump, respawn, harvestInfo, torchList, armorSlots, furnaceView,
 } from './world';
 import type { Sim, StepResult } from './world';
 import { WORLD_SEED, TICK_MS } from '../shared/constants';
@@ -19,6 +19,15 @@ function post(msg: SimMsg): void {
 }
 function postInv(): void {
   if (sim) post({ t: 'inventory', inv: invSlots(sim) });
+}
+function postArmor(): void {
+  if (sim) post({ t: 'armor', slots: armorSlots(sim) });
+}
+let openFurnaceId = -1;
+function postFurnace(id: number): void {
+  if (!sim) return;
+  const v = furnaceView(sim, id);
+  if (v) post({ t: 'furnace', ...v });
 }
 function postChest(id: number): void {
   if (!sim) return;
@@ -47,6 +56,7 @@ function startLoop(): void {
     const r = stepSim(sim, dt);
     const layerKey = sim.location + ':' + sim.caveSeed;
     if (layerKey !== lastLayerKey) { lastLayerKey = layerKey; postTorches(); } // cambió de capa
+    if (openFurnaceId >= 0 && sim.tick % 4 === 0) postFurnace(openFurnaceId); // progreso en vivo
     const p = playerPos(sim);
     const hi = harvestInfo(sim);
     const snap: Snapshot = {
@@ -73,6 +83,7 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     postQuests();
     postTerrainAll();
     postTorches();
+    postArmor();
     startLoop();
     return;
   }
@@ -116,7 +127,16 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
   } else if (m.t === 'move') {
     moveItem(sim, m.from, m.to);
     postInv();
-    for (const a of [m.from, m.to] as InvAddr[]) if (a.c === 'chest') postChest(a.id);
+    postArmor();
+    for (const a of [m.from, m.to] as InvAddr[]) {
+      if (a.c === 'chest') postChest(a.id);
+      if (a.c === 'furnace') postFurnace(a.id);
+    }
+  } else if (m.t === 'openFurnace') {
+    openFurnaceId = m.id;
+    postFurnace(m.id);
+  } else if (m.t === 'closeFurnace') {
+    openFurnaceId = -1;
   } else if (m.t === 'quickMove') {
     quickMove(sim, m.from, m.id);
     postInv(); postChest(m.id);

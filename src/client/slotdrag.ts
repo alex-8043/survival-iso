@@ -4,12 +4,15 @@
 import type { InvAddr } from '../shared/protocol';
 
 export function addrStr(a: InvAddr): string {
-  return a.c === 'inv' ? 'inv:' + a.i : 'chest:' + a.id + ':' + a.i;
+  if (a.c === 'inv') return 'inv:' + a.i;
+  if (a.c === 'armor') return 'armor:' + a.i;
+  return 'chest:' + a.id + ':' + a.i;
 }
 export function parseAddr(s: string | undefined): InvAddr | null {
   if (!s) return null;
   const p = s.split(':');
   if (p[0] === 'inv') return { c: 'inv', i: +p[1] };
+  if (p[0] === 'armor') return { c: 'armor', i: +p[1] };
   if (p[0] === 'chest') return { c: 'chest', id: +p[1], i: +p[2] };
   return null;
 }
@@ -52,10 +55,11 @@ export function enableDrag(root: HTMLElement, onMove: (from: InvAddr, to: InvAdd
   });
 }
 
-// HTML de una ranura con su sprite (o vacía).
-export function slotHtml(addr: InvAddr, spriteUrl: string | null, count: number, title: string): string {
+// HTML de una ranura con su sprite (o vacía). `extra` = contenido adicional
+// (p.ej. barra de durabilidad), que se pinta incluso en ranuras vacías.
+export function slotHtml(addr: InvAddr, spriteUrl: string | null, count: number, title: string, extra = ''): string {
   const inner = spriteUrl
     ? `<span class="isprite" style="background-image:url(${spriteUrl})"></span>${count > 1 ? `<span class="icount">${count}</span>` : ''}`
     : '';
-  return `<div class="islot" data-addr="${addrStr(addr)}"${spriteUrl ? ` title="${title}"` : ''}>${inner}</div>`;
+  return `<div class="islot" data-addr="${addrStr(addr)}"${spriteUrl ? ` title="${title}"` : ''}>${inner}${extra}</div>`;
 }

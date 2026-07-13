@@ -27,11 +27,11 @@ import { hash2 } from '../shared/noise';
 import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN, MAX_BLOCK, BEDROCK_LEVEL, WATER_SURFACE, terrainTopMaterial, materialItem, subsurfaceMaterial, villageLayoutAt, isHouseWall, nearestVillage, VILLAGE_SCAN } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
 import type { TerrainEdit, FluidEdit } from '../shared/protocol';
-import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor } from '../shared/items';
+import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor, toolMaxDur, SMELT, FUEL } from '../shared/items';
 import type { AnimalType } from '../shared/items';
 import { recipeById } from '../shared/recipes';
 import { SELL, BUY, questFor, villagerId } from '../shared/trades';
-import { type Slot, INV_SIZE, INV_MAIN, CHEST_SIZE, makeSlots, addTo, takeFrom, countIn, slotCounts, moveSlot, sortRange, cloneSlots } from '../shared/inventory';
+import { type Slot, INV_SIZE, INV_MAIN, CHEST_SIZE, makeSlots, addTo, takeFrom, countIn, slotCounts, maxStack, sortRange, cloneSlots } from '../shared/inventory';
 import type { InputState, InteractTarget, Stats, AnimalSnap, TimeInfo, InvAddr, SaveState, Structure, Location } from '../shared/protocol';
 
 export const Position = defineComponent({ x: Types.f32, y: Types.f32 });
@@ -41,6 +41,14 @@ export interface Animal {
   vid?: number; vcx?: number; vcy?: number; // aldeanos: id de comercio + centro de su aldea
 }
 export interface Floater { text: string; color: number; x: number; y: number; }
+
+// Estado de un horno: 3 ranuras (combustible/material/salida) + progreso y quema.
+export interface FurnaceState {
+  fuel: Slot; input: Slot; output: Slot;
+  cook: number;   // segundos acumulados fundiendo el material actual
+  burn: number;   // segundos de combustible que quedan ardiendo
+  burnMax: number;
+}
 
 export interface Sim {
   world: ReturnType<typeof createWorld>;
@@ -62,7 +70,9 @@ export interface Sim {
   spawnTimer: number;
   caveMobTimer: number;
   inv: Slot[];
+  armor: Slot[]; // [0]=casco, [1]=pechera
   chests: Record<number, Slot[]>;
+  furnaces: Record<number, FurnaceState>; // estado de cada horno colocado (por id)
   stats: Stats;
   timeS: number;
   tick: number;
@@ -150,7 +160,7 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     harvestTimer: 0, harvestMax: 0, harvestKey: '', harvested: new Map(), depleted: new Set(),
     structures: [], nextStructId: 1,
     animals: [], nextAnimalId: 1, spawnTimer: 0, caveMobTimer: 0,
-    inv: makeSlots(INV_SIZE), chests: {},
+    inv: makeSlots(INV_SIZE), armor: makeSlots(2), chests: {}, furnaces: {},
     stats: { health: 100, food: 100, thirst: 100, stamina: 100 },
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
     location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null, riding: false,
@@ -193,6 +203,8 @@ export function createSimFromSave(save: SaveState): Sim {
   if (save.fluids) for (const [k, v] of save.fluids) sim.fluids.set(k, v);
   if (save.villagesLooted) for (const k of save.villagesLooted) sim.villagesLooted.add(k);
   if (save.torches) for (const k of save.torches) sim.torches.add(k);
+  if (save.armor) for (let i = 0; i < 2; i++) sim.armor[i] = save.armor[i] ? { ...save.armor[i]! } : null;
+  if (save.furnaces) for (const [id, f] of save.furnaces) sim.furnaces[id] = { fuel: f.fuel ?? null, input: f.input ?? null, output: f.output ?? null, cook: f.cook, burn: f.burn, burnMax: f.burnMax };
   if (sim.location === 'surface') for (let i = 0; i < 4; i++) trySpawnAnimal(sim);
   return sim;
 }
@@ -203,6 +215,7 @@ export function serializeSim(sim: Sim): SaveState {
     px: Position.x[sim.playerId], py: Position.y[sim.playerId],
     timeS: sim.timeS, stats: { ...sim.stats },
     inv: cloneSlots(sim.inv),
+    armor: cloneSlots(sim.armor),
     chests: Object.keys(sim.chests).map((k) => [Number(k), cloneSlots(sim.chests[Number(k)])] as [number, Slot[]]),
     harvested: [...sim.harvested.entries()], depleted: [...sim.depleted],
     structures: sim.structures.map((s) => ({ ...s })),
@@ -215,6 +228,10 @@ export function serializeSim(sim: Sim): SaveState {
     fluids: [...sim.fluids.entries()],
     villagesLooted: [...sim.villagesLooted],
     torches: [...sim.torches],
+    furnaces: Object.keys(sim.furnaces).map((k) => {
+      const f = sim.furnaces[Number(k)];
+      return [Number(k), { fuel: f.fuel && { ...f.fuel }, input: f.input && { ...f.input }, output: f.output && { ...f.output }, cook: f.cook, burn: f.burn, burnMax: f.burnMax }] as [number, { fuel: Slot; input: Slot; output: Slot; cook: number; burn: number; burnMax: number }];
+    }),
   };
 }
 
@@ -396,7 +413,6 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   sim.stats.thirst = Math.max(0, sim.stats.thirst - THIRST_DECAY * dt);
   if (sim.stats.food <= 0 || sim.stats.thirst <= 0) sim.stats.health = Math.max(0, sim.stats.health - STARVE_DAMAGE * dt);
   else if (sim.stats.health < 100) sim.stats.health = Math.min(100, sim.stats.health + HEALTH_REGEN * dt);
-  if (sim.stats.health <= 0 && !sim.dead) { sim.dead = true; res.sfx.push({ sound: 'animal:player:death', x: px, y: py }); }
 
   // Lava en cueva: tocarla (estar justo al lado) hace MUCHO daño.
   if (sim.location === 'cave') {
@@ -406,7 +422,7 @@ export function stepSim(sim: Sim, dt: number): StepResult {
       if (caveTile(lx + ox, ly + oy, sim.caveSeed).kind === 'lava') { nearLava = true; break; }
     }
     if (nearLava) {
-      sim.stats.health = Math.max(0, sim.stats.health - 22 * dt); // ~22/s
+      applyDamage(sim, 22 * dt); // ~22/s, reducido por la armadura
       if (sim.tick % 18 === 0) res.floaters.push({ text: '¡Lava! -vida', color: 0xff5522, x: px, y: py });
     }
   }
@@ -445,6 +461,7 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   }
 
   if (sim.location !== 'cave') stepFluids(sim, res);
+  stepFurnaces(sim, dt);
 
   // Sonido ambiente ocasional de un animal cercano.
   if (sim.tick % 80 === 0 && sim.animals.length) {
@@ -453,6 +470,13 @@ export function stepSim(sim: Sim, dt: number): StepResult {
       const a = cand[Math.floor(hash2(sim.tick, 1, sim.seed) * cand.length) % cand.length];
       res.sfx.push({ sound: 'animal:' + a.type + ':idle', x: a.x, y: a.y });
     }
+  }
+
+  // Detección de muerte AL FINAL del tick: así se capta la vida a 0 venga de donde
+  // venga (hambre/sed, lava, agua salada, ataques…) sin que la regeneración la tape.
+  if (sim.stats.health <= 0 && !sim.dead) {
+    sim.dead = true;
+    res.sfx.push({ sound: 'animal:player:death', x: Position.x[sim.playerId], y: Position.y[sim.playerId] });
   }
 
   sim.tick++;
@@ -515,6 +539,12 @@ export function harvestInfo(sim: Sim): { active: boolean; progress: number; x: n
   return { active: true, progress, x, y };
 }
 
+// Segundos de "carga" por golpe según el NIVEL de la herramienta correcta.
+// Índice = tier: 0 = mano (muy lento), 1 = madera (lento), 2 = piedra (normal),
+// 3 = hierro, 4 = oro (algo más rápido), 5 = diamante (rápido).
+const TIER_MINE_TIME = [1.5, 0.95, 0.6, 0.42, 0.3, 0.2];
+const HAND_SOFT_TIME = 1.1; // tierra/arena y nodos blandos a mano
+
 // Tiempo para romper el objetivo actual: >0 = segundos; -1 = falta herramienta;
 // 0 = no rompible. La tierra/arena a mano tardan bastante (no se autopican).
 function harvestNeed(sim: Sim, tgt: NonNullable<InteractTarget>): number {
@@ -527,9 +557,9 @@ function harvestNeed(sim: Sim, tgt: NonNullable<InteractTarget>): number {
     if ((kind === 'rock' || kind === 'coal') && !(tool && tool.kind === 'pickaxe')) return -1;
     if (kind === 'iron' && !(tool && tool.kind === 'pickaxe' && tool.tier >= 2)) return -1;
     if ((kind === 'gold' || kind === 'diamond') && !(tool && tool.kind === 'pickaxe' && tool.tier >= 3)) return -1;
-    const fast = tool && ((kind === 'tree' && tool.kind === 'axe') || (kind !== 'tree' && tool.kind === 'pickaxe'));
-    if (fast) return HARVEST_COOLDOWN / tool!.speed;
-    return kind === 'tree' ? HARVEST_COOLDOWN * 3.2 : HARVEST_COOLDOWN * 2.2; // a mano: lento
+    const correct = tool && ((kind === 'tree' && tool.kind === 'axe') || (kind !== 'tree' && tool.kind === 'pickaxe'));
+    if (correct) return TIER_MINE_TIME[tool!.tier];
+    return kind === 'tree' ? TIER_MINE_TIME[0] : HAND_SOFT_TIME; // a mano: muy lento
   }
   if (tgt.kind === 'block') {
     if (sim.location === 'cave' || Math.hypot(tgt.x - px, tgt.y - py) > INTERACT_RANGE) return 0;
@@ -538,12 +568,30 @@ function harvestNeed(sim: Sim, tgt: NonNullable<InteractTarget>): number {
     const base = tileAt(tgt.x, tgt.y, sim.seed);
     const e = sim.edits.get(keyOf(tgt.x, tgt.y));
     const item = materialItem(e ? e.top : terrainTopMaterial(base.terrain));
-    if (item === 'stone') { if (!(tool && tool.kind === 'pickaxe')) return -1; return HARVEST_COOLDOWN / tool!.speed; }
-    return HARVEST_COOLDOWN * 3.4; // tierra/arena/nieve a mano: bastante lento (no se autopica)
+    if (item === 'stone') { if (!(tool && tool.kind === 'pickaxe')) return -1; return TIER_MINE_TIME[tool!.tier]; }
+    return HAND_SOFT_TIME; // tierra/arena/nieve a mano
   }
   const an = sim.animals.find((a) => a.id === tgt.id && a.alive);
   if (!an || an.type === 'villager' || Math.hypot(an.x - px, an.y - py) > INTERACT_RANGE) return 0;
-  return HARVEST_COOLDOWN;
+  return tool && tool.kind === 'sword' ? 0.35 : 0.6; // golpe (espada más ágil que a puño)
+}
+
+// Gasta 1 punto de durabilidad de la herramienta activa; si llega a 0, se rompe.
+function damageActiveTool(sim: Sim, res: StepResult): void {
+  const id = sim.activeTool;
+  if (!id || !ITEMS[id]?.tool || toolMaxDur(id) <= 0) return;
+  const slot = sim.inv.find((s) => s !== null && s.id === id);
+  if (!slot) return;
+  if (slot.dur === undefined) slot.dur = toolMaxDur(id);
+  slot.dur -= 1;
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (slot.dur <= 0) {
+    sim.inv[sim.inv.indexOf(slot)] = null;
+    sim.activeTool = null;
+    res.sfx.push({ sound: 'break:tool', x: px, y: py });
+    res.floaters.push({ text: '¡' + ITEMS[id].name + ' se rompió!', color: 0xff8a8a, x: px, y: py });
+  }
+  res.inventoryChanged = true; // refresca la barra de durabilidad (o la rotura)
 }
 
 function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
@@ -582,6 +630,7 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
     const mat = nodeSfxMaterial(kind);
     res.sfx.push({ sound: (depleted ? 'break:' : 'hit:') + mat, x: tgt.x, y: tgt.y });
     const fast = tool && ((kind === 'tree' && tool.kind === 'axe') || (kind !== 'tree' && tool.kind === 'pickaxe'));
+    if (fast) damageActiveTool(sim, res); // se gasta la herramienta al recolectar con ella
     return fast ? HARVEST_COOLDOWN / tool!.speed : HARVEST_COOLDOWN;
   }
 
@@ -594,6 +643,7 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
       res.inventoryChanged = true;
       const tool = toolFor(sim.activeTool);
       const fast = r.item === 'stone' && tool && tool.kind === 'pickaxe';
+      if (fast) damageActiveTool(sim, res);
       return fast ? HARVEST_COOLDOWN / tool!.speed : HARVEST_COOLDOWN;
     }
     return r.floater ? HARVEST_COOLDOWN * 2 : 0;
@@ -605,6 +655,7 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
   if (Math.hypot(an.x - px, an.y - py) > INTERACT_RANGE) return 0;
   const tool = toolFor(sim.activeTool);
   const dmg = tool && tool.kind === 'sword' ? tool.tier : 1;
+  if (tool && tool.kind === 'sword') damageActiveTool(sim, res); // la espada se desgasta al atacar
   an.health -= dmg;
   an.tx = an.x + (an.x - px) * 0.4;
   an.ty = an.y + (an.y - py) * 0.4;
@@ -777,7 +828,43 @@ export function place(sim: Sim, item: string, x: number, y: number): { ok: boole
   const id = sim.nextStructId++;
   sim.structures.push({ id, type: item, x, y });
   if (def.place === 'container') sim.chests[id] = makeSlots(CHEST_SIZE);
+  if (item === 'furnace') sim.furnaces[id] = { fuel: null, input: null, output: null, cook: 0, burn: 0, burnMax: 0 };
   return { ok: true };
+}
+
+// Fundición del horno: consume combustible + material y produce la salida con el
+// tiempo de la receta. Se ejecuta en segundo plano (aunque la UI esté cerrada).
+function stepFurnaces(sim: Sim, dt: number): void {
+  for (const key in sim.furnaces) {
+    const f = sim.furnaces[key];
+    const inp = f.input;
+    const rec = inp ? SMELT[inp.id] : undefined;
+    const canOut = !!rec && (!f.output || (f.output.id === rec.out && f.output.count < 99));
+    if (f.burn > 0) f.burn = Math.max(0, f.burn - dt);
+    if (f.burn <= 0 && rec && canOut && f.fuel && FUEL[f.fuel.id] !== undefined) {
+      f.burnMax = FUEL[f.fuel.id];
+      f.burn = f.burnMax;
+      f.fuel.count -= 1; if (f.fuel.count <= 0) f.fuel = null;
+    }
+    if (f.burn > 0 && rec && canOut && inp) {
+      f.cook += dt;
+      if (f.cook >= rec.time) {
+        f.cook = 0;
+        inp.count -= 1; if (inp.count <= 0) f.input = null;
+        if (f.output) f.output.count += 1; else f.output = { id: rec.out, count: 1 };
+      }
+    } else {
+      f.cook = Math.max(0, f.cook - dt * 2);
+    }
+  }
+}
+
+// Snapshot del horno para el cliente (ranuras + progreso).
+export function furnaceView(sim: Sim, id: number): { id: number; fuel: Slot; input: Slot; output: Slot; cook: number; cookMax: number; burn: number; burnMax: number } | null {
+  const f = sim.furnaces[id];
+  if (!f) return null;
+  const rec = f.input ? SMELT[f.input.id] : undefined;
+  return { id, fuel: f.fuel, input: f.input, output: f.output, cook: f.cook, cookMax: rec ? rec.time : 0, burn: f.burn, burnMax: f.burnMax };
 }
 
 // Subirse a una barca colocada: la quita del mundo y activa el modo barca.
@@ -946,13 +1033,48 @@ export function bestFood(sim: Sim): string | null {
 // --- Movimiento / orden de ranuras y cofres ---
 function slotsOf(sim: Sim, addr: InvAddr): Slot[] | null {
   if (addr.c === 'inv') return sim.inv;
+  if (addr.c === 'armor') return sim.armor;
+  if (addr.c === 'furnace') return null; // el horno se accede por campos, no por array
   return sim.chests[addr.id] ?? null;
 }
+// Lee/escribe una ranura de cualquier contenedor (inv/cofre/armadura/horno).
+function slotGet(sim: Sim, a: InvAddr): Slot {
+  if (a.c === 'furnace') { const f = sim.furnaces[a.id]; if (!f) return null; return a.i === 0 ? f.fuel : a.i === 1 ? f.input : f.output; }
+  const arr = slotsOf(sim, a); return arr && a.i >= 0 && a.i < arr.length ? (arr[a.i] ?? null) : null;
+}
+function slotSet(sim: Sim, a: InvAddr, s: Slot): void {
+  if (a.c === 'furnace') { const f = sim.furnaces[a.id]; if (!f) return; if (a.i === 0) f.fuel = s; else if (a.i === 1) f.input = s; else f.output = s; return; }
+  const arr = slotsOf(sim, a); if (arr && a.i >= 0 && a.i < arr.length) arr[a.i] = s;
+}
 export function moveItem(sim: Sim, from: InvAddr, to: InvAddr): void {
-  const a = slotsOf(sim, from), b = slotsOf(sim, to);
-  if (!a || !b) return;
-  if (from.i < 0 || from.i >= a.length || to.i < 0 || to.i >= b.length) return;
-  moveSlot(a, from.i, b, to.i);
+  const a = slotGet(sim, from);
+  if (!a) return;
+  // Reglas de destino: armadura (pieza correcta) y horno (combustible/salida).
+  if (to.c === 'armor' && ITEMS[a.id]?.armor !== (to.i === 0 ? 'helmet' : 'chest')) return;
+  if (to.c === 'furnace') {
+    if (to.i === 2) return;                       // en la salida no se puede meter nada
+    if (to.i === 0 && FUEL[a.id] === undefined) return; // el hueco de combustible solo admite combustible
+  }
+  const b = slotGet(sim, to);
+  if (!b) { slotSet(sim, to, a); slotSet(sim, from, null); return; }
+  if (b.id === a.id && b.dur === undefined) { // apila (no herramientas)
+    const add = Math.min(maxStack(a.id) - b.count, a.count);
+    b.count += add; a.count -= add;
+    slotSet(sim, to, b); slotSet(sim, from, a.count > 0 ? a : null);
+    return;
+  }
+  slotSet(sim, from, b); slotSet(sim, to, a); // intercambio
+}
+
+// Defensa total del equipo puesto y aplicación de daño con reducción por armadura.
+export function armorDefense(sim: Sim): number {
+  let d = 0;
+  for (const s of sim.armor) if (s) d += ITEMS[s.id]?.defense ?? 0;
+  return d;
+}
+function applyDamage(sim: Sim, amount: number): void {
+  const red = 1 - Math.min(0.8, armorDefense(sim) * 0.03); // ~3% por punto, tope 80%
+  sim.stats.health = Math.max(0, sim.stats.health - amount * red);
 }
 export function sortInv(sim: Sim): void { sortRange(sim.inv, 0, INV_MAIN); }
 export function sortChest(sim: Sim, id: number): void { const c = sim.chests[id]; if (c) sortRange(c, 0, c.length); }
@@ -963,6 +1085,7 @@ export function quickMove(sim: Sim, from: InvAddr, chestId: number): void {
   moveAmount(sim, from, chestId, 1e9);
 }
 export function moveAmount(sim: Sim, from: InvAddr, chestId: number, amount: number): void {
+  if (from.c === 'armor') return; // la armadura no usa traspaso rápido
   const src = from.c === 'inv' ? sim.inv : sim.chests[from.id];
   const dest = from.c === 'inv' ? sim.chests[chestId] : sim.inv;
   if (!src || !dest) return;
@@ -989,7 +1112,7 @@ export function drink(sim: Sim): { ok: boolean; floater?: Floater } {
   // Agua de mar: salada, hace daño.
   if (sim.location !== 'cave') for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
     if (isWater(tileAt(px + ox, py + oy, sim.seed).terrain)) {
-      sim.stats.health = Math.max(0, sim.stats.health - 4);
+      applyDamage(sim, 4);
       return { ok: true, floater: { text: '¡Agua salada! -vida', color: 0xff6a6a, x: fx, y: fy } };
     }
   }
@@ -1005,6 +1128,7 @@ export function animalSnaps(sim: Sim): AnimalSnap[] {
   ));
 }
 export function invSlots(sim: Sim): Slot[] { return sim.inv; }
+export function armorSlots(sim: Sim): Slot[] { return sim.armor; }
 export function playerPos(sim: Sim): { x: number; y: number } {
   return { x: Position.x[sim.playerId], y: Position.y[sim.playerId] };
 }

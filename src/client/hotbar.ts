@@ -1,10 +1,19 @@
 // Hotbar: refleja las 9 últimas ranuras del inventario (INV_MAIN..). Teclas 1-9,
 // rueda o clic. Una ranura vacía = manos.
 
-import { ITEMS } from '../shared/items';
+import { ITEMS, toolMaxDur } from '../shared/items';
 import { itemSpriteURL } from './itemsprites';
 import { INV_MAIN, INV_HOTBAR } from '../shared/inventory';
 import type { Slot } from '../shared/inventory';
+
+// Barra de durabilidad para una ranura de herramienta (verde -> rojo).
+export function durBar(s: NonNullable<Slot>): string {
+  if (s.dur === undefined) return '';
+  const max = toolMaxDur(s.id) || 1;
+  const f = Math.max(0, Math.min(1, s.dur / max));
+  const col = f > 0.5 ? '#5fd35f' : f > 0.25 ? '#e0c040' : '#e05555';
+  return `<span class="durbar"><span style="width:${(f * 100).toFixed(0)}%;background:${col}"></span></span>`;
+}
 
 export interface HotbarSel {
   kind: 'hand' | 'tool' | 'place' | 'boat';
@@ -59,7 +68,7 @@ function render(): void {
       if (!s) return `<div class="hslot empty${sel}" data-i="${i}">${key}</div>`;
       const d = ITEMS[s.id];
       const badge = s.count > 1 ? `<span class="hcount">${s.count}</span>` : '';
-      return `<div class="hslot${sel}" data-i="${i}" title="${d ? d.name : s.id}">${key}<span class="hicon himg" style="background-image:url(${itemSpriteURL(s.id)})"></span>${badge}</div>`;
+      return `<div class="hslot${sel}" data-i="${i}" title="${d ? d.name : s.id}">${key}<span class="hicon himg" style="background-image:url(${itemSpriteURL(s.id)})"></span>${badge}${durBar(s)}</div>`;
     })
     .join('');
   bar.querySelectorAll('.hslot').forEach((elm) =>

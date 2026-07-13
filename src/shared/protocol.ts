@@ -3,7 +3,7 @@
 import type { AnimalType } from './items';
 import type { Slot } from './inventory';
 
-export type InvAddr = { c: 'inv'; i: number } | { c: 'chest'; id: number; i: number };
+export type InvAddr = { c: 'inv'; i: number } | { c: 'chest'; id: number; i: number } | { c: 'armor'; i: number } | { c: 'furnace'; id: number; i: number };
 
 export interface AnimalSnap {
   id: number;
@@ -85,6 +85,7 @@ export interface SaveState {
   stats: Stats;
   inventory?: InvEntry[]; // formato antiguo (compat)
   inv?: Slot[]; // ranuras (nuevo)
+  armor?: Slot[]; // equipo (casco, pechera)
   chests?: [number, Slot[]][];
   harvested: [string, number][];
   depleted: string[];
@@ -99,6 +100,7 @@ export interface SaveState {
   fluids?: [string, number][]; // celdas de fluido dinámico (1=agua)
   villagesLooted?: string[]; // aldeas cuyo cofre ya se generó
   torches?: string[]; // antorchas colocadas (clave con prefijo de capa)
+  furnaces?: [number, { fuel: Slot; input: Slot; output: Slot; cook: number; burn: number; burnMax: number }][];
 }
 
 // Cliente -> Simulación
@@ -125,6 +127,8 @@ export type ClientMsg =
   | { t: 'sortInv' }
   | { t: 'sortChest'; id: number }
   | { t: 'openChest'; id: number }
+  | { t: 'openFurnace'; id: number }
+  | { t: 'closeFurnace' }
   | { t: 'requestSave' };
 
 // Simulación -> Cliente
@@ -133,6 +137,8 @@ export type SimMsg =
   | { t: 'snapshot'; snap: Snapshot }
   | { t: 'harvest'; x: number; y: number; depleted: boolean }
   | { t: 'inventory'; inv: Slot[] }
+  | { t: 'armor'; slots: Slot[] }
+  | { t: 'furnace'; id: number; fuel: Slot; input: Slot; output: Slot; cook: number; cookMax: number; burn: number; burnMax: number }
   | { t: 'quests'; ids: number[] }
   | { t: 'chest'; id: number; items: Slot[] }
   | { t: 'structures'; structures: Structure[] }

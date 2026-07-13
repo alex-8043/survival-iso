@@ -36,13 +36,13 @@ export const RECIPES: Recipe[] = [
   { id: 'gold_chest', name: 'Pechera de oro', out: { item: 'gold_chest', count: 1 }, ingredients: { gold_ingot: 8 }, station: 'forge', cat: 'Armaduras' },
   { id: 'diamond_helmet', name: 'Casco de diamante', out: { item: 'diamond_helmet', count: 1 }, ingredients: { diamond: 5 }, station: 'forge', cat: 'Armaduras' },
   { id: 'diamond_chest', name: 'Pechera de diamante', out: { item: 'diamond_chest', count: 1 }, ingredients: { diamond: 8 }, station: 'forge', cat: 'Armaduras' },
-  { id: 'iron_ingot', name: 'Fundir hierro', out: { item: 'iron_ingot', count: 1 }, ingredients: { iron_ore: 1, coal: 1 }, station: 'furnace', cat: 'Fundición' },
-  { id: 'gold_ingot', name: 'Fundir oro', out: { item: 'gold_ingot', count: 1 }, ingredients: { gold_ore: 1, coal: 1 }, station: 'furnace', cat: 'Fundición' },
+  // (Fundir hierro/oro y cocinar carne ya NO son recetas: se hacen en el HORNO
+  //  poniendo combustible + material y esperando. Ver SMELT en items.ts.)
   { id: 'coin', name: 'Acuñar monedas ×8', out: { item: 'coin', count: 8 }, ingredients: { gold_ingot: 1 }, station: 'crafting_table', cat: 'Comercio' },
-  { id: 'cooked_meat', name: 'Cocinar carne', out: { item: 'cooked_meat', count: 1 }, ingredients: { meat: 1, wood: 1 }, station: 'furnace', cat: 'Cocina' },
   { id: 'chest', name: 'Cofre (27 espacios)', out: { item: 'chest', count: 1 }, ingredients: { wood: 8 }, cat: 'Construcción' },
   { id: 'bed', name: 'Cama', out: { item: 'bed', count: 1 }, ingredients: { wood: 5, wool: 3 }, cat: 'Construcción' },
-  { id: 'torch', name: 'Antorcha ×4', out: { item: 'torch', count: 4 }, ingredients: { wood: 1, coal: 1 }, cat: 'Construcción' },
+  { id: 'stick', name: 'Palos ×4', out: { item: 'stick', count: 4 }, ingredients: { wood: 2 }, cat: 'Construcción' },
+  { id: 'torch', name: 'Antorcha ×4', out: { item: 'torch', count: 4 }, ingredients: { stick: 1, coal: 1 }, cat: 'Construcción' },
   { id: 'wood_block', name: 'Bloque de madera ×4', out: { item: 'wood_block', count: 4 }, ingredients: { wood: 1 }, cat: 'Construcción' },
   { id: 'stone_block', name: 'Bloque de piedra ×4', out: { item: 'stone_block', count: 4 }, ingredients: { stone: 1 }, cat: 'Construcción' },
   { id: 'crafting_table', name: 'Mesa de crafteo', out: { item: 'crafting_table', count: 1 }, ingredients: { wood: 4 }, cat: 'Estaciones' },

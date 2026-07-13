@@ -33,6 +33,7 @@ export interface ItemDef {
   solid?: boolean; // el bloque bloquea el paso
   boat?: boolean;
   defense?: number;
+  armor?: 'helmet' | 'chest'; // pieza de armadura equipable
 }
 
 export const ITEMS: Record<string, ItemDef> = {
@@ -70,14 +71,14 @@ export const ITEMS: Record<string, ItemDef> = {
   diamond_pickaxe: { id: 'diamond_pickaxe', name: 'Pico de diamante', color: 0x6fe6e0, tool: { kind: 'pickaxe', tier: 5, speed: 3.9 } },
   diamond_sword: { id: 'diamond_sword', name: 'Espada de diamante', color: 0x6fe6e0, tool: { kind: 'sword', tier: 5, speed: 1 } },
 
-  leather_helmet: { id: 'leather_helmet', name: 'Casco de cuero', color: 0x8a6b45, defense: 1 },
-  leather_chest: { id: 'leather_chest', name: 'Pechera de cuero', color: 0x8a6b45, defense: 2 },
-  iron_helmet: { id: 'iron_helmet', name: 'Casco de hierro', color: 0xc9d2dc, defense: 3 },
-  iron_chest: { id: 'iron_chest', name: 'Pechera de hierro', color: 0xc9d2dc, defense: 5 },
-  gold_helmet: { id: 'gold_helmet', name: 'Casco de oro', color: 0xf2cf5a, defense: 3 },
-  gold_chest: { id: 'gold_chest', name: 'Pechera de oro', color: 0xf2cf5a, defense: 5 },
-  diamond_helmet: { id: 'diamond_helmet', name: 'Casco de diamante', color: 0x6fe6e0, defense: 6 },
-  diamond_chest: { id: 'diamond_chest', name: 'Pechera de diamante', color: 0x6fe6e0, defense: 9 },
+  leather_helmet: { id: 'leather_helmet', name: 'Casco de cuero', color: 0x8a6b45, defense: 1, armor: 'helmet' },
+  leather_chest: { id: 'leather_chest', name: 'Pechera de cuero', color: 0x8a6b45, defense: 2, armor: 'chest' },
+  iron_helmet: { id: 'iron_helmet', name: 'Casco de hierro', color: 0xc9d2dc, defense: 3, armor: 'helmet' },
+  iron_chest: { id: 'iron_chest', name: 'Pechera de hierro', color: 0xc9d2dc, defense: 6, armor: 'chest' },
+  gold_helmet: { id: 'gold_helmet', name: 'Casco de oro', color: 0xf2cf5a, defense: 4, armor: 'helmet' },
+  gold_chest: { id: 'gold_chest', name: 'Pechera de oro', color: 0xf2cf5a, defense: 7, armor: 'chest' },
+  diamond_helmet: { id: 'diamond_helmet', name: 'Casco de diamante', color: 0x6fe6e0, defense: 6, armor: 'helmet' },
+  diamond_chest: { id: 'diamond_chest', name: 'Pechera de diamante', color: 0x6fe6e0, defense: 9, armor: 'chest' },
 
   wood_block: { id: 'wood_block', name: 'Bloque de madera', color: 0x9c6b3f, place: 'block', solid: true },
   stone_block: { id: 'stone_block', name: 'Bloque de piedra', color: 0x9aa0ab, place: 'block', solid: true },
@@ -86,9 +87,32 @@ export const ITEMS: Record<string, ItemDef> = {
   forge: { id: 'forge', name: 'Herrería', color: 0x4a4a54, place: 'station', solid: true },
   chest: { id: 'chest', name: 'Cofre', color: 0x8a5a2b, place: 'container', solid: true },
   bed: { id: 'bed', name: 'Cama', color: 0xc0392b, place: 'bed' },
+  stick: { id: 'stick', name: 'Palo', color: 0x8a5a2b },
   torch: { id: 'torch', name: 'Antorcha', color: 0xffb648, place: 'torch' },
 
   boat: { id: 'boat', name: 'Barca', color: 0x8a5a2b, boat: true, place: 'boat' },
+};
+
+// Durabilidad máxima por nivel de herramienta (1=madera .. 5=diamante).
+// Cuanto mejor la herramienta, más aguanta (petición del usuario).
+export const TIER_DURABILITY = [0, 60, 130, 250, 400, 800];
+export function toolMaxDur(id: string): number {
+  const t = ITEMS[id]?.tool;
+  return t ? TIER_DURABILITY[t.tier] : 0;
+}
+
+// Fundición del horno: material a fundir -> {salida, segundos}. El horno NO cocina
+// solo: hay que ponerle combustible y material, y tarda su tiempo.
+export const SMELT: Record<string, { out: string; time: number }> = {
+  iron_ore: { out: 'iron_ingot', time: 15 },
+  gold_ore: { out: 'gold_ingot', time: 15 },
+  meat: { out: 'cooked_meat', time: 10 },
+};
+// Combustibles: ítem -> segundos de quema que aporta.
+export const FUEL: Record<string, number> = {
+  coal: 80,
+  wood: 12,
+  stick: 4,
 };
 
 export interface NodeKindDef {

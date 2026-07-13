@@ -5,8 +5,9 @@ import { GameRenderer } from './client/renderer';
 import { setupInput, setInputEnabled } from './client/input';
 import { initHud, updateHud, pushPickup } from './client/hud';
 import { showMenu } from './client/menu';
-import { initPanel, togglePanel, isPanelOpen, updatePanel, updatePanelStats, setPanelCustom } from './client/panel';
+import { initPanel, togglePanel, isPanelOpen, updatePanel, updatePanelStats, setPanelCustom, setPanelArmor } from './client/panel';
 import { initChest, openChestPanel, setChestItems, updateChestInv } from './client/chestpanel';
+import { initFurnace, openFurnacePanel, setFurnaceView, updateFurnaceInv } from './client/furnacepanel';
 import { initHotbar, updateHotbar, type HotbarSel } from './client/hotbar';
 import { initCraft, toggleCraft, updateCraft, openStationCraft } from './client/craftpanel';
 import { initControls, toggleControls, showControls } from './client/controls';
@@ -107,6 +108,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
     updateCraft(inv);
     updatePanel(lastSlots, lastStats);
     updateChestInv(lastSlots);
+    updateFurnaceInv(lastSlots);
     if (isVillageOpen()) updateVillageDialog(lastSlots, acceptedQuests);
     renderer.hasBoat = countIn(inv, 'boat') > 0;
   };
@@ -154,6 +156,12 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
       case 'torches':
         renderer.setTorches(m.list);
         break;
+      case 'armor':
+        setPanelArmor(m.slots);
+        break;
+      case 'furnace':
+        setFurnaceView(m);
+        break;
       case 'floater':
         renderer.spawnFloat(m.text, m.color, m.x, m.y);
         break;
@@ -179,6 +187,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   renderer.onPlace = (x, y, item) => worker.postMessage({ t: 'place', item, x, y });
   renderer.onOpenStation = (type) => openStationCraft(type);
   renderer.onOpenChest = (id) => { worker.postMessage({ t: 'openChest', id }); openChestPanel(id, lastSlots); };
+  renderer.onOpenFurnace = (id) => { worker.postMessage({ t: 'openFurnace', id }); openFurnacePanel(id, lastSlots); };
   renderer.onBoardBoat = (id) => worker.postMessage({ t: 'board', id });
   renderer.onSleep = () => worker.postMessage({ t: 'sleep' });
   renderer.onTalk = (id) => openVillageDialog(id, lastSlots, acceptedQuests);
@@ -202,6 +211,7 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
     onMoveAmount: (from, id, amount) => worker.postMessage({ t: 'moveAmount', from, id, amount }),
     onEat: sendEat,
   });
+  initFurnace({ onMove: sendMove, onClose: () => worker.postMessage({ t: 'closeFurnace' }) });
 
   initHotbar((sel: HotbarSel) => {
     renderer.selected = sel;

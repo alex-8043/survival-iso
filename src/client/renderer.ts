@@ -61,6 +61,7 @@ export class GameRenderer {
   readonly torches = new Map<string, { obj: Container; glow: Sprite; x: number; y: number }>();
   readonly torchLayer = new Container();
   torchGlowTex: Texture | null = null;
+  heldTorchGlow: Sprite | null = null; // luz cuando llevas una antorcha en la mano
 
   // Cámara: zoom (rueda), suavizado de desnivel y paneo (clic rueda).
   zoom = 1; camLift = 0; panX = 0; panY = 0;
@@ -108,6 +109,7 @@ export class GameRenderer {
   onPlace: (x: number, y: number, item: string) => void = () => {};
   onOpenStation: (type: string) => void = () => {};
   onOpenChest: (id: number) => void = () => {};
+  onOpenFurnace: (id: number) => void = () => {};
   onBoardBoat: (id: number) => void = () => {};
   onEat: (item: string) => void = () => {};
   onSleep: () => void = () => {};
@@ -129,6 +131,12 @@ export class GameRenderer {
     this.caveDark.visible = false;
     this.app.stage.addChild(this.caveDark);
     this.app.stage.addChild(this.torchLayer); // resplandores por encima de la oscuridad
+    this.heldTorchGlow = new Sprite(this.ensureGlowTex());
+    this.heldTorchGlow.anchor.set(0.5);
+    this.heldTorchGlow.blendMode = 'add';
+    this.heldTorchGlow.tint = 0xffb060;
+    this.heldTorchGlow.visible = false;
+    this.torchLayer.addChild(this.heldTorchGlow);
     this.exitMarker = this.makeExitMarker();
     this.exitMarker.visible = false;
     this.app.stage.addChild(this.exitMarker);
@@ -172,6 +180,7 @@ export class GameRenderer {
       if (this.sleepTarget) { this.onSleep(); return; }
       if (this.structTarget) {
         if (this.structTarget.type === 'chest') this.onOpenChest(this.structTarget.id);
+        else if (this.structTarget.type === 'furnace') this.onOpenFurnace(this.structTarget.id);
         else if (this.structTarget.type === 'boat') this.onBoardBoat(this.structTarget.id);
         else if (this.structTarget.type === 'bed') this.onSleep();
         else this.onOpenStation(this.structTarget.type);
@@ -691,19 +700,22 @@ export class GameRenderer {
             const rLvl = this.effWaterAt(x + 1, y) ? 0 : this.effLevelAt(x + 1, y);
             const lLvl = this.effWaterAt(x, y + 1) ? 0 : this.effLevelAt(x, y + 1);
             const rDrop = lvl - rLvl, lDrop = lvl - lLvl;
+            // EP = sobredibujado (~1 px) para que los rombos contiguos se solapen y
+            // NO queden costuras/huecos entre bloques colocados (antialias desactivado).
+            const EP = 1;
             if (rDrop > 0) {
               const fh = rDrop * BLOCK_PX;
-              g.poly([s.x + hw, topY, s.x, topY + hh, s.x, topY + hh + fh, s.x + hw, topY + fh]).fill({ color: darker(base, 0.52) });
+              g.poly([s.x + hw + EP, topY, s.x, topY + hh + EP, s.x, topY + hh + fh + EP, s.x + hw + EP, topY + fh]).fill({ color: darker(base, 0.52) });
               const n = Math.min(rDrop, 8);
               for (let i = 1; i < n; i++) { const yy = topY + i * BLOCK_PX; g.moveTo(s.x + hw, yy); g.lineTo(s.x, yy + hh); g.stroke({ width: 1, color: 0x000000, alpha: 0.13 }); }
             }
             if (lDrop > 0) {
               const fh = lDrop * BLOCK_PX;
-              g.poly([s.x - hw, topY, s.x, topY + hh, s.x, topY + hh + fh, s.x - hw, topY + fh]).fill({ color: darker(base, 0.4) });
+              g.poly([s.x - hw - EP, topY, s.x, topY + hh + EP, s.x, topY + hh + fh + EP, s.x - hw - EP, topY + fh]).fill({ color: darker(base, 0.4) });
               const n = Math.min(lDrop, 8);
               for (let i = 1; i < n; i++) { const yy = topY + i * BLOCK_PX; g.moveTo(s.x - hw, yy); g.lineTo(s.x, yy + hh); g.stroke({ width: 1, color: 0x000000, alpha: 0.13 }); }
             }
-            g.poly([s.x, topY - hh, s.x + hw, topY, s.x, topY + hh, s.x - hw, topY]).fill({ color: base });
+            g.poly([s.x, topY - hh - EP, s.x + hw + EP, topY, s.x, topY + hh + EP, s.x - hw - EP, topY]).fill({ color: base });
             if (!edit && caveEntranceAt(x, y, this.seed)) this.drawEntrance(g, s.x, topY);
             else if (!edit && springAt(x, y, this.seed)) this.drawSpring(g, s.x, topY);
           }
@@ -1151,6 +1163,19 @@ export class GameRenderer {
 
     if (this.villages.size) this.updateHouseTransparency();
     this.updateTorches();
+    // Antorcha en mano: ilumina alrededor del jugador (en la cueva o de noche).
+    if (this.heldTorchGlow) {
+      const holding = this.selected?.item === 'torch';
+      const gA = this.loc === 'cave' ? 0.62 : Math.min(0.75, this.nightAlpha(this.tod) * 1.3);
+      const on = holding && gA > 0.03;
+      this.heldTorchGlow.visible = on;
+      if (on) {
+        this.heldTorchGlow.x = this.world.x + ps.x * z;
+        this.heldTorchGlow.y = this.world.y + (py - this.jumpOff) * z;
+        this.heldTorchGlow.alpha = gA;
+        this.heldTorchGlow.scale.set(z * 1.3);
+      }
+    }
     this.computeTarget();
     this.drawDarkness();
   }
