@@ -2,6 +2,7 @@
 // inventario, hotbar, crafteo, colocación, guardado y música.
 
 import { GameRenderer } from './client/renderer';
+import { initItemTooltip } from './client/tooltip';
 import { setupInput, setInputEnabled } from './client/input';
 import { initHud, updateHud, pushPickup } from './client/hud';
 import { showMenu } from './client/menu';
@@ -53,6 +54,7 @@ async function main(): Promise<void> {
   if (!parent) throw new Error('Falta el contenedor #app');
   const renderer = new GameRenderer();
   await renderer.init(parent);
+  initItemTooltip();
   const bundle = await loadGame();
   showMenu({
     hasSave: !!bundle,

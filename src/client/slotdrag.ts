@@ -6,6 +6,7 @@ import type { InvAddr } from '../shared/protocol';
 export function addrStr(a: InvAddr): string {
   if (a.c === 'inv') return 'inv:' + a.i;
   if (a.c === 'armor') return 'armor:' + a.i;
+  if (a.c === 'furnace') return 'furnace:' + a.id + ':' + a.i;
   return 'chest:' + a.id + ':' + a.i;
 }
 export function parseAddr(s: string | undefined): InvAddr | null {
@@ -13,6 +14,7 @@ export function parseAddr(s: string | undefined): InvAddr | null {
   const p = s.split(':');
   if (p[0] === 'inv') return { c: 'inv', i: +p[1] };
   if (p[0] === 'armor') return { c: 'armor', i: +p[1] };
+  if (p[0] === 'furnace') return { c: 'furnace', id: +p[1], i: +p[2] };
   if (p[0] === 'chest') return { c: 'chest', id: +p[1], i: +p[2] };
   return null;
 }
@@ -61,5 +63,5 @@ export function slotHtml(addr: InvAddr, spriteUrl: string | null, count: number,
   const inner = spriteUrl
     ? `<span class="isprite" style="background-image:url(${spriteUrl})"></span>${count > 1 ? `<span class="icount">${count}</span>` : ''}`
     : '';
-  return `<div class="islot" data-addr="${addrStr(addr)}"${spriteUrl ? ` title="${title}"` : ''}>${inner}${extra}</div>`;
+  return `<div class="islot" data-addr="${addrStr(addr)}"${spriteUrl ? ` data-name="${title}"` : ''}>${inner}${extra}</div>`;
 }

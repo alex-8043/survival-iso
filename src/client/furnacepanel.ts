@@ -27,7 +27,25 @@ export function openFurnacePanel(id: number, playerInv: Slot[]): void {
   render();
 }
 export function closeFurnacePanel(): void { if (!open) return; open = false; onClose(); render(); }
-export function setFurnaceView(v: FurnaceView): void { if (v.id !== furnaceId) return; view = v; if (open) render(); }
+
+// Actualiza el horno. Para no romper la interacción (clic en la X, arrastre), solo
+// se RECONSTRUYE el panel cuando cambian las RANURAS; el progreso (llama + barra)
+// se actualiza tocando dos estilos, sin rehacer el HTML cada tick.
+function slotKey(s: Slot): string { return s ? s.id + 'x' + s.count : '-'; }
+export function setFurnaceView(v: FurnaceView): void {
+  if (v.id !== furnaceId) return;
+  const changed = slotKey(v.fuel) + slotKey(v.input) + slotKey(v.output) !== slotKey(view.fuel) + slotKey(view.input) + slotKey(view.output);
+  view = v;
+  if (!open) return;
+  if (changed) render();
+  else updateProgress();
+}
+function updateProgress(): void {
+  const flame = document.querySelector<HTMLElement>('#furnace .furnace-flame-fill');
+  const arrow = document.querySelector<HTMLElement>('#furnace .furnace-arrow-fill');
+  if (flame) flame.style.height = (view.burnMax > 0 ? Math.min(100, (100 * view.burn) / view.burnMax) : 0) + '%';
+  if (arrow) arrow.style.width = (view.cookMax > 0 ? Math.min(100, (100 * view.cook) / view.cookMax) : 0) + '%';
+}
 export function updateFurnaceInv(slots: Slot[]): void { playerSlots = slots; if (open) render(); }
 
 function fslot(i: number, s: Slot, label: string): string {

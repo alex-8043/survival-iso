@@ -63,6 +63,10 @@ export class GameRenderer {
   torchGlowTex: Texture | null = null;
   heldTorchGlow: Sprite | null = null; // luz cuando llevas una antorcha en la mano
 
+  // Cursores según el objetivo (hacha/pico/espada), calculados una vez.
+  cursorAxe = 'pointer'; cursorPick = 'pointer'; cursorSword = 'pointer';
+  private targetNodeKind: string | null = null;
+
   // Cámara: zoom (rueda), suavizado de desnivel y paneo (clic rueda).
   zoom = 1; camLift = 0; panX = 0; panY = 0;
   panning = false; panCX = 0; panCY = 0;
@@ -131,6 +135,9 @@ export class GameRenderer {
     this.caveDark.visible = false;
     this.app.stage.addChild(this.caveDark);
     this.app.stage.addChild(this.torchLayer); // resplandores por encima de la oscuridad
+    this.cursorAxe = this.makeToolCursor('axe');
+    this.cursorPick = this.makeToolCursor('pick');
+    this.cursorSword = this.makeToolCursor('sword');
     this.heldTorchGlow = new Sprite(this.ensureGlowTex());
     this.heldTorchGlow.anchor.set(0.5);
     this.heldTorchGlow.blendMode = 'add';
@@ -396,6 +403,35 @@ export class GameRenderer {
     g.ellipse(0, -13, 1.7, 3).fill({ color: 0xffe488 });       // núcleo de la llama
     c.addChild(g);
     return c;
+  }
+
+  // Genera un cursor con forma de herramienta (data URL) para usar en CSS.
+  private makeToolCursor(kind: 'axe' | 'pick' | 'sword'): string {
+    const S = 30;
+    const cv = document.createElement('canvas');
+    cv.width = S; cv.height = S;
+    const c = cv.getContext('2d')!;
+    c.lineCap = 'round'; c.lineJoin = 'round';
+    const stroke = (col: string, w: number, pts: [number, number][]) => {
+      c.strokeStyle = col; c.lineWidth = w; c.beginPath(); c.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke();
+    };
+    const outline = '#111';
+    if (kind === 'axe') {
+      stroke(outline, 6, [[9, 27], [19, 11]]); stroke('#7a4a24', 4, [[9, 27], [19, 11]]); // mango
+      c.fillStyle = outline; c.beginPath(); c.moveTo(14, 6); c.lineTo(26, 8); c.lineTo(21, 17); c.lineTo(13, 12); c.closePath(); c.fill();
+      c.fillStyle = '#c9d2dc'; c.beginPath(); c.moveTo(15, 8); c.lineTo(24, 9.5); c.lineTo(20.5, 15.5); c.lineTo(14.5, 11.5); c.closePath(); c.fill();
+    } else if (kind === 'pick') {
+      stroke(outline, 6, [[15, 27], [15, 12]]); stroke('#7a4a24', 4, [[15, 27], [15, 12]]); // mango
+      stroke(outline, 7, [[5, 13], [15, 8], [25, 13]]);   // cabeza (arco) con contorno
+      stroke('#b8bec8', 4.5, [[5, 13], [15, 8], [25, 13]]);
+    } else { // sword
+      stroke(outline, 7, [[15, 5], [15, 21]]); stroke('#d3dae4', 4.5, [[15, 5], [15, 21]]); // hoja
+      c.fillStyle = '#d3dae4'; c.beginPath(); c.moveTo(11.5, 6); c.lineTo(15, 2); c.lineTo(18.5, 6); c.closePath(); c.fill(); // punta
+      stroke(outline, 6, [[9, 21], [21, 21]]); stroke('#c99b3a', 4, [[9, 21], [21, 21]]); // guarda
+      stroke(outline, 6, [[15, 21], [15, 27]]); stroke('#8a5a2b', 4, [[15, 21], [15, 27]]); // empuñadura
+    }
+    return `url(${cv.toDataURL('image/png')}) 3 3, pointer`;
   }
 
   private ensureGlowTex(): Texture {
@@ -1250,7 +1286,8 @@ export class GameRenderer {
         } else {
           {
             const key = this.nodeKey(pick.x, pick.y);
-            if (!this.depleted.has(key) && this.nodeKindAtL(pick.x, pick.y) && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) next = { kind: 'node', x: pick.x, y: pick.y };
+            const nk = this.nodeKindAtL(pick.x, pick.y);
+            if (!this.depleted.has(key) && nk && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) { next = { kind: 'node', x: pick.x, y: pick.y }; this.targetNodeKind = nk; }
             else if (this.canDig(pick.x, pick.y) && Math.hypot(pick.x - this.prx, pick.y - this.pry) <= INTERACT_RANGE) next = { kind: 'block', x: pick.x, y: pick.y };
           }
           this.app.canvas.style.cursor = next ? 'pointer' : 'default';
@@ -1258,6 +1295,9 @@ export class GameRenderer {
       }
     }
     this.target = next;
+    // Cursor según el objetivo: hacha (árbol), pico (mineral), espada (mob).
+    if (next?.kind === 'animal') this.app.canvas.style.cursor = this.cursorSword;
+    else if (next?.kind === 'node') this.app.canvas.style.cursor = this.targetNodeKind === 'tree' ? this.cursorAxe : this.cursorPick;
 
     this.highlight.clear();
     this.harvestBar.clear();

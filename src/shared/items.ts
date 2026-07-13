@@ -33,7 +33,7 @@ export interface ItemDef {
   solid?: boolean; // el bloque bloquea el paso
   boat?: boolean;
   defense?: number;
-  armor?: 'helmet' | 'chest'; // pieza de armadura equipable
+  armor?: 'helmet' | 'chest' | 'legs' | 'boots'; // pieza de armadura equipable
 }
 
 export const ITEMS: Record<string, ItemDef> = {
@@ -72,13 +72,21 @@ export const ITEMS: Record<string, ItemDef> = {
   diamond_sword: { id: 'diamond_sword', name: 'Espada de diamante', color: 0x6fe6e0, tool: { kind: 'sword', tier: 5, speed: 1 } },
 
   leather_helmet: { id: 'leather_helmet', name: 'Casco de cuero', color: 0x8a6b45, defense: 1, armor: 'helmet' },
-  leather_chest: { id: 'leather_chest', name: 'Pechera de cuero', color: 0x8a6b45, defense: 2, armor: 'chest' },
-  iron_helmet: { id: 'iron_helmet', name: 'Casco de hierro', color: 0xc9d2dc, defense: 3, armor: 'helmet' },
+  leather_chest: { id: 'leather_chest', name: 'Pechera de cuero', color: 0x8a6b45, defense: 3, armor: 'chest' },
+  leather_legs: { id: 'leather_legs', name: 'Pantalón de cuero', color: 0x8a6b45, defense: 2, armor: 'legs' },
+  leather_boots: { id: 'leather_boots', name: 'Botas de cuero', color: 0x8a6b45, defense: 1, armor: 'boots' },
+  iron_helmet: { id: 'iron_helmet', name: 'Casco de hierro', color: 0xc9d2dc, defense: 2, armor: 'helmet' },
   iron_chest: { id: 'iron_chest', name: 'Pechera de hierro', color: 0xc9d2dc, defense: 6, armor: 'chest' },
-  gold_helmet: { id: 'gold_helmet', name: 'Casco de oro', color: 0xf2cf5a, defense: 4, armor: 'helmet' },
+  iron_legs: { id: 'iron_legs', name: 'Pantalón de hierro', color: 0xc9d2dc, defense: 5, armor: 'legs' },
+  iron_boots: { id: 'iron_boots', name: 'Botas de hierro', color: 0xc9d2dc, defense: 2, armor: 'boots' },
+  gold_helmet: { id: 'gold_helmet', name: 'Casco de oro', color: 0xf2cf5a, defense: 3, armor: 'helmet' },
   gold_chest: { id: 'gold_chest', name: 'Pechera de oro', color: 0xf2cf5a, defense: 7, armor: 'chest' },
-  diamond_helmet: { id: 'diamond_helmet', name: 'Casco de diamante', color: 0x6fe6e0, defense: 6, armor: 'helmet' },
+  gold_legs: { id: 'gold_legs', name: 'Pantalón de oro', color: 0xf2cf5a, defense: 6, armor: 'legs' },
+  gold_boots: { id: 'gold_boots', name: 'Botas de oro', color: 0xf2cf5a, defense: 3, armor: 'boots' },
+  diamond_helmet: { id: 'diamond_helmet', name: 'Casco de diamante', color: 0x6fe6e0, defense: 4, armor: 'helmet' },
   diamond_chest: { id: 'diamond_chest', name: 'Pechera de diamante', color: 0x6fe6e0, defense: 9, armor: 'chest' },
+  diamond_legs: { id: 'diamond_legs', name: 'Pantalón de diamante', color: 0x6fe6e0, defense: 7, armor: 'legs' },
+  diamond_boots: { id: 'diamond_boots', name: 'Botas de diamante', color: 0x6fe6e0, defense: 4, armor: 'boots' },
 
   wood_block: { id: 'wood_block', name: 'Bloque de madera', color: 0x9c6b3f, place: 'block', solid: true },
   stone_block: { id: 'stone_block', name: 'Bloque de piedra', color: 0x9aa0ab, place: 'block', solid: true },

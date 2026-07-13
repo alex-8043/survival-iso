@@ -160,7 +160,7 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     harvestTimer: 0, harvestMax: 0, harvestKey: '', harvested: new Map(), depleted: new Set(),
     structures: [], nextStructId: 1,
     animals: [], nextAnimalId: 1, spawnTimer: 0, caveMobTimer: 0,
-    inv: makeSlots(INV_SIZE), armor: makeSlots(2), chests: {}, furnaces: {},
+    inv: makeSlots(INV_SIZE), armor: makeSlots(4), chests: {}, furnaces: {},
     stats: { health: 100, food: 100, thirst: 100, stamina: 100 },
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
     location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null, riding: false,
@@ -203,7 +203,7 @@ export function createSimFromSave(save: SaveState): Sim {
   if (save.fluids) for (const [k, v] of save.fluids) sim.fluids.set(k, v);
   if (save.villagesLooted) for (const k of save.villagesLooted) sim.villagesLooted.add(k);
   if (save.torches) for (const k of save.torches) sim.torches.add(k);
-  if (save.armor) for (let i = 0; i < 2; i++) sim.armor[i] = save.armor[i] ? { ...save.armor[i]! } : null;
+  if (save.armor) for (let i = 0; i < 4; i++) sim.armor[i] = save.armor[i] ? { ...save.armor[i]! } : null;
   if (save.furnaces) for (const [id, f] of save.furnaces) sim.furnaces[id] = { fuel: f.fuel ?? null, input: f.input ?? null, output: f.output ?? null, cook: f.cook, burn: f.burn, burnMax: f.burnMax };
   if (sim.location === 'surface') for (let i = 0; i < 4; i++) trySpawnAnimal(sim);
   return sim;
@@ -1050,7 +1050,7 @@ export function moveItem(sim: Sim, from: InvAddr, to: InvAddr): void {
   const a = slotGet(sim, from);
   if (!a) return;
   // Reglas de destino: armadura (pieza correcta) y horno (combustible/salida).
-  if (to.c === 'armor' && ITEMS[a.id]?.armor !== (to.i === 0 ? 'helmet' : 'chest')) return;
+  if (to.c === 'armor' && ITEMS[a.id]?.armor !== ARMOR_PIECES[to.i]) return;
   if (to.c === 'furnace') {
     if (to.i === 2) return;                       // en la salida no se puede meter nada
     if (to.i === 0 && FUEL[a.id] === undefined) return; // el hueco de combustible solo admite combustible
@@ -1065,6 +1065,9 @@ export function moveItem(sim: Sim, from: InvAddr, to: InvAddr): void {
   }
   slotSet(sim, from, b); slotSet(sim, to, a); // intercambio
 }
+
+// Orden de las ranuras de armadura: 0=casco, 1=pechera, 2=pantalón, 3=botas.
+const ARMOR_PIECES = ['helmet', 'chest', 'legs', 'boots'] as const;
 
 // Defensa total del equipo puesto y aplicación de daño con reducción por armadura.
 export function armorDefense(sim: Sim): number {

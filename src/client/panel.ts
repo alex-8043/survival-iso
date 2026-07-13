@@ -20,7 +20,7 @@ const STAT_ROWS = [
 let open = false;
 let custom: Customization = { ...DEFAULT_CUSTOM };
 let slots: Slot[] = [];
-let armor: Slot[] = [null, null];
+let armor: Slot[] = [null, null, null, null];
 export function setPanelArmor(a: Slot[]): void { armor = a; if (open) render(); }
 let lastStats: Stats = { health: 100, food: 100, thirst: 100, stamina: 100 };
 let onMove: (from: InvAddr, to: InvAddr) => void = () => {};
@@ -83,7 +83,7 @@ function render(): void {
       <div class="panel-left">
         <canvas id="panel-av" width="150" height="200"></canvas>
         <div class="armor-row">
-          <div class="armor-cells">${armorCell(0, 'Casco')}${armorCell(1, 'Pechera')}</div>
+          <div class="armor-cells">${armorCell(0, 'Casco')}${armorCell(1, 'Pechera')}${armorCell(2, 'Piernas')}${armorCell(3, 'Botas')}</div>
           <div class="armor-def">Defensa: <b>${totalDef}</b></div>
         </div>
         <div class="pstats">${statsHtml}</div>

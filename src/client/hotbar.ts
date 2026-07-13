@@ -68,7 +68,7 @@ function render(): void {
       if (!s) return `<div class="hslot empty${sel}" data-i="${i}">${key}</div>`;
       const d = ITEMS[s.id];
       const badge = s.count > 1 ? `<span class="hcount">${s.count}</span>` : '';
-      return `<div class="hslot${sel}" data-i="${i}" title="${d ? d.name : s.id}">${key}<span class="hicon himg" style="background-image:url(${itemSpriteURL(s.id)})"></span>${badge}${durBar(s)}</div>`;
+      return `<div class="hslot${sel}" data-i="${i}" data-name="${d ? d.name : s.id}">${key}<span class="hicon himg" style="background-image:url(${itemSpriteURL(s.id)})"></span>${badge}${durBar(s)}</div>`;
     })
     .join('');
   bar.querySelectorAll('.hslot').forEach((elm) =>
