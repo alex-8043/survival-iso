@@ -5,9 +5,10 @@ import { Application, Container, Graphics, Sprite, Texture, Text } from 'pixi.js
 import { TILE_W, TILE_H, MAX_ELEV_PX, BLOCK_PX, INTERACT_RANGE, NIGHT_MAX_DARK, PLAYER_SPEED } from '../shared/constants';
 import { gridToScreen, screenToGrid, depthOf } from '../shared/iso';
 import { tileAt, nodeAt, isWater, TERRAIN, caveTile, caveNodeAt, caveEntranceAt, caveDecorAt, surfaceDecorAt, springAt, villageCenterAt, villageLayoutAt, isHouseWall, isHouseInterior, VILLAGE_SCAN, BEDROCK_LEVEL, type CaveTile, type VillageHouse } from '../shared/worldgen';
-import { avatarCanvas, type AvatarAction, type Customization, type HeldTool } from './avatar';
+import { avatarCanvas, armorColor, type AvatarAction, type Customization, type HeldTool, type ArmorColors } from './avatar';
 import { ITEMS } from '../shared/items';
 import type { InteractTarget, Snapshot, Structure, Location, TerrainEdit, FluidEdit } from '../shared/protocol';
+import type { Slot } from '../shared/inventory';
 import type { AnimalType } from '../shared/items';
 import type { HotbarSel } from './hotbar';
 
@@ -89,6 +90,7 @@ export class GameRenderer {
   prx = 0; pry = 0; lastPrx = 0; lastPry = 0;
   snapSpeed = 0; spdEMA = 0; curAction: AvatarAction = 'idle'; actionHold = 0;
   ptile = ''; tod = 0.35; onWater = false; hasBoat = false; riding = false;
+  caveFade = 0; caveEntering = false; // bajada/subida física a la cueva
 
   loc: Location = 'surface';
   caveSeed = 0;
@@ -118,6 +120,14 @@ export class GameRenderer {
   onEat: (item: string) => void = () => {};
   onSleep: () => void = () => {};
   onTalk: (id: number) => void = () => {};
+  onShoot: (x: number, y: number) => void = () => {};
+  onFish: (x: number, y: number) => void = () => {};
+  // Flechas en vuelo y boya de pesca (pool reutilizable de Graphics).
+  private projPool: Graphics[] = [];
+  private projData: { x: number; y: number; vx: number; vy: number }[] = [];
+  private fishBob: Graphics | null = null;
+  private fishData: { x: number; y: number } | null = null;
+  private bobT = 0;
 
   async init(parent: HTMLElement): Promise<void> {
     this.app = new Application();
@@ -176,6 +186,15 @@ export class GameRenderer {
       if (e.button === 2) { // clic derecho: comer si hay comida seleccionada
         const it = this.selected?.item;
         if (it && ITEMS[it]?.food) this.onEat(it);
+        return;
+      }
+      // Arco / caña de pescar: clic izquierdo dispara/pesca hacia el cursor.
+      const selItem = this.selected?.item;
+      if (selItem && this.mouseX >= 0 && (ITEMS[selItem]?.weapon === 'bow' || ITEMS[selItem]?.fishing)) {
+        const wx = (this.mouseX - this.world.x) / this.zoom, wy = (this.mouseY - this.world.y) / this.zoom;
+        const gp = screenToGrid(wx, wy);
+        if (ITEMS[selItem]?.weapon === 'bow') this.onShoot(gp.x, gp.y);
+        else this.onFish(gp.x, gp.y);
         return;
       }
       const placing = this.selected?.kind === 'place' || this.selected?.kind === 'boat';
@@ -237,10 +256,22 @@ export class GameRenderer {
     for (const action of Object.keys(ANIM_FRAMES) as AvatarAction[]) {
       const n = ANIM_FRAMES[action];
       const arr: Texture[] = [];
-      for (let i = 0; i < n; i++) arr.push(Texture.from(avatarCanvas(this.custom, PLAYER_SCALE, action, i / n, this.held)));
+      for (let i = 0; i < n; i++) arr.push(Texture.from(avatarCanvas(this.custom, PLAYER_SCALE, action, i / n, this.held, this.avatarArmor)));
       this.frames[action] = arr;
     }
     if (this.player) this.player.texture = this.frames.idle[0];
+  }
+
+  // Armadura equipada dibujada sobre el personaje (regenera los fotogramas).
+  avatarArmor: ArmorColors | null = null;
+  private armorKey = '';
+  setAvatarArmor(slots: Slot[]): void {
+    const a: ArmorColors = { helmet: armorColor(slots[0]?.id), chest: armorColor(slots[1]?.id), legs: armorColor(slots[2]?.id), boots: armorColor(slots[3]?.id) };
+    const key = [a.helmet, a.chest, a.legs, a.boots].join(',');
+    if (key === this.armorKey) return;
+    this.armorKey = key;
+    this.avatarArmor = a;
+    if (this.custom && this.player) this.buildFrames();
   }
 
   // Regenera los fotogramas del avatar con (o sin) la herramienta en la mano.
@@ -269,7 +300,22 @@ export class GameRenderer {
     for (const [key, sp] of this.decor) { this.entities.removeChild(sp); sp.destroy(); this.decor.delete(key); }
     for (const sp of this.structs.values()) sp.visible = loc === 'surface';
     this.ptile = '';
-    if (!first) this.showTransition();
+    // El cambio de capa ocurre a mitad de la bajada física (pantalla en negro);
+    // el fundido lo dibuja drawCaveWipe según snap.caveFade. Sin blur extra.
+    void first;
+  }
+
+  // Fundido a negro de la bajada/subida física a la cueva (overlay DOM).
+  private drawCaveWipe(): void {
+    let el = document.getElementById('cave-wipe');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'cave-wipe';
+      el.style.cssText = 'position:fixed;inset:0;background:#05060a;pointer-events:none;z-index:60;opacity:0;display:none';
+      document.body.appendChild(el);
+    }
+    if (this.caveFade > 0.002) { el.style.display = 'block'; el.style.opacity = String(Math.min(1, this.caveFade)); }
+    else if (el.style.display !== 'none') el.style.display = 'none';
   }
 
   // Al entrar/salir de la cueva se DIFUMINA el mundo (desenfoque + atenuado) y la
@@ -346,6 +392,9 @@ export class GameRenderer {
       ra.tx = a.x; ra.ty = a.y; ra.type = a.type; ra.vid = a.vid;
     }
     for (const [id, ra] of this.animals) if (!seen.has(id)) { this.entities.removeChild(ra.sprite); ra.sprite.destroy(); this.animals.delete(id); }
+    this.projData = snap.projectiles.map((p) => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy }));
+    this.fishData = snap.fishing;
+    this.caveFade = snap.caveFade; this.caveEntering = snap.caveEntering;
   }
 
   setStructures(list: Structure[]): void {
@@ -760,18 +809,28 @@ export class GameRenderer {
     }
   }
 
-  // Entrada de cueva PEQUEÑA y discreta: un agujero oscuro en el suelo con un
-  // borde de tierra/piedra alrededor. Nada de montículos grandes.
+  // Entrada de cueva: una BOCA con rampa que baja hacia la oscuridad, para que se
+  // lea como un descenso físico (no una tapa/escalera). El lado cercano (abajo)
+  // queda abierto como rampa; el lejano, un reborde rocoso.
   private drawEntrance(g: Graphics, cx: number, topY: number): void {
     const hw = TILE_W / 2, hh = TILE_H / 2;
-    // borde terroso siguiendo el rombo de la tile
-    g.poly([cx, topY - hh * 0.78, cx + hw * 0.82, topY, cx, topY + hh * 0.78, cx - hw * 0.82, topY]).fill({ color: 0x5b4a38 });
-    // agujero oscuro (rombo interior)
-    g.poly([cx, topY - hh * 0.56, cx + hw * 0.6, topY, cx, topY + hh * 0.56, cx - hw * 0.6, topY]).fill({ color: 0x120d0a });
-    g.poly([cx, topY - hh * 0.34, cx + hw * 0.36, topY, cx, topY + hh * 0.34, cx - hw * 0.36, topY]).fill({ color: 0x040308 });
-    // un par de piedritas al borde
-    g.ellipse(cx - hw * 0.55, topY - 1, 2.4, 1.6).fill({ color: 0x746c62 });
-    g.ellipse(cx + hw * 0.5, topY + 1, 2.2, 1.5).fill({ color: 0x6b6259 });
+    // reborde de tierra/roca alrededor del hueco
+    g.poly([cx, topY - hh * 0.82, cx + hw * 0.86, topY, cx, topY + hh * 0.82, cx - hw * 0.86, topY]).fill({ color: 0x5b4a38 });
+    g.poly([cx, topY - hh * 0.82, cx + hw * 0.86, topY, cx, topY + hh * 0.4, cx - hw * 0.4, topY - hh * 0.2]).fill({ color: 0x6b5842 }); // borde lejano iluminado
+    // boca oscura con profundidad (varios rombos hacia el negro, desplazados hacia
+    // el fondo para simular una rampa que baja)
+    g.poly([cx, topY - hh * 0.58, cx + hw * 0.64, topY, cx, topY + hh * 0.66, cx - hw * 0.64, topY]).fill({ color: 0x2a2018 });
+    g.poly([cx, topY - hh * 0.4, cx + hw * 0.5, topY - hh * 0.06, cx, topY + hh * 0.5, cx - hw * 0.5, topY - hh * 0.06]).fill({ color: 0x140f0b });
+    g.poly([cx, topY - hh * 0.22, cx + hw * 0.34, topY - hh * 0.1, cx, topY + hh * 0.34, cx - hw * 0.34, topY - hh * 0.1]).fill({ color: 0x050409 });
+    // escalones/estrías de la rampa en el lado cercano (bajando)
+    for (let i = 1; i <= 3; i++) {
+      const yy = topY + hh * 0.14 * i;
+      g.moveTo(cx - hw * 0.34, yy).lineTo(cx, yy + hh * 0.16).lineTo(cx + hw * 0.34, yy).stroke({ width: 1, color: 0x000000, alpha: 0.35 });
+    }
+    // piedritas del borde
+    g.ellipse(cx - hw * 0.6, topY - 1, 2.6, 1.7).fill({ color: 0x746c62 });
+    g.ellipse(cx + hw * 0.54, topY + 1, 2.2, 1.5).fill({ color: 0x6b6259 });
+    g.ellipse(cx + hw * 0.1, topY - hh * 0.5, 1.8, 1.2).fill({ color: 0x7d7568 });
   }
 
   private drawSpring(g: Graphics, cx: number, topY: number): void {
@@ -963,9 +1022,11 @@ export class GameRenderer {
     const hw = TILE_W / 2, hh = TILE_H / 2;
     const o = gridToScreen(h.x0, h.y0);
     const rel = (x: number, y: number) => { const s = gridToScreen(x, y); return { x: s.x - o.x, y: s.y - o.y }; };
-    const variant = (Math.imul(h.x0, 31) ^ h.y0) & 1;
-    const wallCol = variant ? 0xcbb488 : 0xbfa878;
-    const roofF = variant ? 0x9a4f32 : 0x5f7a44;
+    const vh = (Math.imul(h.x0, 73856093) ^ Math.imul(h.y0, 19349663)) >>> 0;
+    const wallVar = vh % 3, roofVar = (vh >>> 4) % 3;
+    const wallCol = [0xe0d0ad, 0xcdb98f, 0xd6c4a8][wallVar]; // enlucido claro
+    const beam = 0x5b3f26, beamHi = 0x74542f;              // entramado de madera
+    const roofF = [0xa8503a, 0x5f7a44, 0x6a5a86][roofVar]; // teja roja / verde / pizarra
 
     const floor = new Graphics();
     for (let yy = h.y0 + 1; yy < h.y0 + h.h - 1; yy++) for (let xx = h.x0 + 1; xx < h.x0 + h.w - 1; xx++) {
@@ -974,28 +1035,81 @@ export class GameRenderer {
     }
 
     const walls = new Graphics();
-    const WH = 2.6 * BLOCK_PX;
+    const WH = 2.7 * BLOCK_PX;
+    // Ventana en una cara (paralelogramo iso) dado su vértice exterior-superior O,
+    // el vector "a lo largo del muro" (A) y el vector "hacia abajo" (D).
+    const window = (ox: number, oy: number, ax: number, ay: number, dx: number, dy: number) => {
+      const pt = (a: number, d: number): [number, number] => [ox + ax * a + dx * d, oy + ay * a + dy * d];
+      const q = [pt(0.28, 0.26), pt(0.72, 0.26), pt(0.72, 0.66), pt(0.28, 0.66)].flat();
+      walls.poly(q).fill({ color: 0x2c3f52 });
+      walls.poly([...pt(0.28, 0.26), ...pt(0.72, 0.26), ...pt(0.72, 0.66), ...pt(0.28, 0.66)]).stroke({ width: 1.5, color: beam });
+      walls.poly([...pt(0.5, 0.26), ...pt(0.5, 0.66)]).stroke({ width: 1, color: beam });
+      walls.poly([...pt(0.28, 0.46), ...pt(0.72, 0.46)]).stroke({ width: 1, color: beam });
+    };
+    let wi = 0;
     for (let yy = h.y0; yy < h.y0 + h.h; yy++) for (let xx = h.x0; xx < h.x0 + h.w; xx++) {
       if (!isHouseWall(h, xx, yy)) continue;
       const p = rel(xx, yy), topY = p.y - WH;
-      walls.poly([p.x + hw, topY, p.x, topY + hh, p.x, p.y + hh, p.x + hw, p.y]).fill({ color: darker(wallCol, 0.72) });
-      walls.poly([p.x - hw, topY, p.x, topY + hh, p.x, p.y + hh, p.x - hw, p.y]).fill({ color: darker(wallCol, 0.56) });
+      const corner = (xx === h.x0 || xx === h.x0 + h.w - 1) && (yy === h.y0 || yy === h.y0 + h.h - 1);
+      const isDoor = xx === h.door.x && yy === h.door.y;
+      walls.poly([p.x + hw, topY, p.x, topY + hh, p.x, p.y + hh, p.x + hw, p.y]).fill({ color: darker(wallCol, 0.74) });
+      walls.poly([p.x - hw, topY, p.x, topY + hh, p.x, p.y + hh, p.x - hw, p.y]).fill({ color: darker(wallCol, 0.58) });
       walls.poly([p.x, topY - hh, p.x + hw, topY, p.x, topY + hh, p.x - hw, topY]).fill({ color: wallCol });
-      walls.rect(p.x - 1, topY, 2, WH).fill({ color: 0x6b4a2b, alpha: 0.22 });
+      // Entramado: viga superior e inferior + postes en las esquinas de cada tile.
+      for (const side of [1, -1] as const) {
+        const ex = side * hw;
+        walls.poly([p.x + ex, topY, p.x, topY + hh, p.x, topY + hh + 3, p.x + ex, topY + 3]).fill({ color: beam }); // viga sup
+        walls.poly([p.x + ex, p.y - 3, p.x, p.y + hh - 3, p.x, p.y + hh, p.x + ex, p.y]).fill({ color: beam });       // viga inf
+        walls.rect(p.x + ex - side * 1.5, topY, 1.5, WH).fill({ color: beamHi });                                     // poste
+        walls.rect(p.x - 1, topY, 2, WH).fill({ color: beam, alpha: 0.5 });                                           // poste central
+      }
+      // Ventanas (en tiles rectos alternos, no en esquinas ni en la puerta).
+      if (!corner && !isDoor && wi % 2 === 0 && false) {
+        window(p.x + hw, topY, -hw, hh, 0, WH);  // cara derecha
+        window(p.x - hw, topY, hw, hh, 0, WH);   // cara izquierda
+      }
+      wi++;
     }
+    // Puerta con marco y dintel.
     const dp = rel(h.door.x, h.door.y);
-    walls.rect(dp.x - 6, dp.y - WH * 0.72, 12, WH * 0.72).fill({ color: 0x3a2416, alpha: 0.55 });
+    walls.rect(dp.x - 7, dp.y - WH * 0.78, 14, WH * 0.78).fill({ color: beam });
+    walls.rect(dp.x - 5, dp.y - WH * 0.72, 10, WH * 0.72).fill({ color: 0x5a3a1e });
+    walls.rect(dp.x - 0.6, dp.y - WH * 0.72, 1.2, WH * 0.72).fill({ color: 0x3a2416 });
+    walls.circle(dp.x + 3, dp.y - WH * 0.34, 1.1).fill({ color: 0xd8c24a }); // pomo
 
     const roof = new Graphics();
-    const lift = WH + 4;
-    const c00 = rel(h.x0, h.y0), c10 = rel(h.x0 + h.w - 1, h.y0), c11 = rel(h.x0 + h.w - 1, h.y0 + h.h - 1), c01 = rel(h.x0, h.y0 + h.h - 1);
-    const p00 = { x: c00.x, y: c00.y - lift }, p10 = { x: c10.x, y: c10.y - lift }, p11 = { x: c11.x, y: c11.y - lift }, p01 = { x: c01.x, y: c01.y - lift };
-    const A = { x: (c00.x + c11.x) / 2, y: (c00.y + c11.y) / 2 - lift - Math.max(h.w, h.h) * 4.5 };
-    roof.poly([A.x, A.y, p00.x, p00.y, p10.x, p10.y]).fill({ color: darker(roofF, 0.9) });
-    roof.poly([A.x, A.y, p00.x, p00.y, p01.x, p01.y]).fill({ color: darker(roofF, 0.78) });
-    roof.poly([A.x, A.y, p10.x, p10.y, p11.x, p11.y]).fill({ color: darker(roofF, 0.68) });
-    roof.poly([A.x, A.y, p01.x, p01.y, p11.x, p11.y]).fill({ color: roofF });
-    roof.poly([p00.x, p00.y, p10.x, p10.y, p11.x, p11.y, p01.x, p01.y]).stroke({ width: 2, color: darker(roofF, 0.6), alpha: 0.5 });
+    const lift = WH + 3;
+    // Corners con alero (se extienden un poco más allá del muro).
+    const cx0 = rel(h.x0, h.y0), cx1 = rel(h.x0 + h.w - 1, h.y0), cx2 = rel(h.x0 + h.w - 1, h.y0 + h.h - 1), cx3 = rel(h.x0, h.y0 + h.h - 1);
+    const ctr = { x: (cx0.x + cx2.x) / 2, y: (cx0.y + cx2.y) / 2 };
+    const ov = 0.16; // alero
+    const eave = (c: { x: number; y: number }) => ({ x: c.x + (c.x - ctr.x) * ov, y: c.y + (c.y - ctr.y) * ov - lift });
+    const p0 = eave(cx0), p1 = eave(cx1), p2 = eave(cx2), p3 = eave(cx3);
+    const span = Math.max(h.w, h.h);
+    const shingles = (a: number[], base: number) => { roof.poly(a).fill({ color: base }); roof.poly([...a]).stroke({ width: 1, color: darker(base, 0.7), alpha: 0.6 }); };
+    if (roofVar === 1) {
+      // Tejado a 4 aguas (piramidal) con cumbrera.
+      const A = { x: (p0.x + p2.x) / 2, y: (p0.y + p2.y) / 2 - span * 5 };
+      shingles([A.x, A.y, p0.x, p0.y, p1.x, p1.y], darker(roofF, 0.88));
+      shingles([A.x, A.y, p0.x, p0.y, p3.x, p3.y], darker(roofF, 0.76));
+      shingles([A.x, A.y, p1.x, p1.y, p2.x, p2.y], darker(roofF, 0.66));
+      shingles([A.x, A.y, p3.x, p3.y, p2.x, p2.y], roofF);
+    } else {
+      // Tejado a dos aguas con cumbrera a lo largo del eje x0->x0+w.
+      const rh = span * (roofVar === 2 ? 6 : 4.4);
+      const RA = { x: (p0.x + p3.x) / 2, y: (p0.y + p3.y) / 2 - rh };
+      const RB = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 - rh };
+      shingles([p0.x, p0.y, p1.x, p1.y, RB.x, RB.y, RA.x, RA.y], darker(roofF, 0.7)); // vertiente frontal
+      shingles([p3.x, p3.y, p2.x, p2.y, RB.x, RB.y, RA.x, RA.y], roofF);              // vertiente trasera
+      roof.poly([p0.x, p0.y, p3.x, p3.y, RA.x, RA.y]).fill({ color: darker(wallCol, 0.9) }); // hastial izq
+      roof.poly([p1.x, p1.y, p2.x, p2.y, RB.x, RB.y]).fill({ color: darker(wallCol, 0.82) }); // hastial der
+      roof.poly([RA.x, RA.y, RB.x, RB.y]).stroke({ width: 2.5, color: darker(roofF, 0.6) });   // cumbrera
+    }
+    // Chimenea de ladrillo (en una esquina del tejado).
+    const ch = { x: p1.x * 0.6 + ctr.x * 0.4, y: (p1.y - lift * 0.2) * 0.6 + (ctr.y - lift) * 0.4 };
+    roof.rect(ch.x - 3, ch.y - 16, 6, 16).fill({ color: 0x8a4a3a });
+    roof.rect(ch.x - 3, ch.y - 16, 6, 3).fill({ color: 0x6a3628 });
+    for (let i = 0; i < 3; i++) roof.rect(ch.x - 3, ch.y - 12 + i * 4, 6, 1).fill({ color: 0x6a3628, alpha: 0.6 });
     return { walls, roof, floor };
   }
 
@@ -1030,9 +1144,48 @@ export class GameRenderer {
     return g;
   }
 
+  // Dibuja flechas en vuelo (interpoladas con su velocidad) y la boya de pesca.
+  private updateProjectiles(dt: number): void {
+    for (const p of this.projData) { p.x += p.vx * dt; p.y += p.vy * dt; }
+    while (this.projPool.length < this.projData.length) {
+      const g = new Graphics();
+      g.moveTo(-7, 0).lineTo(5, 0).stroke({ width: 1.6, color: 0x6b5334 });
+      g.poly([5, -2.4, 10, 0, 5, 2.4]).fill({ color: 0xcfc6b4 });
+      g.poly([-7, 0, -4, -2.2, -4, 2.2]).fill({ color: 0xe7e2d4 });
+      this.entities.addChild(g); this.projPool.push(g);
+    }
+    for (let i = 0; i < this.projPool.length; i++) {
+      const g = this.projPool[i];
+      const p = this.projData[i];
+      if (!p) { g.visible = false; continue; }
+      g.visible = true;
+      const s = gridToScreen(p.x, p.y);
+      g.x = s.x; g.y = s.y - this.elevAtL(p.x, p.y) * MAX_ELEV_PX - 6;
+      // orientación en pantalla del vector de velocidad (proyección isométrica)
+      const sdx = (p.vx - p.vy) * (TILE_W / 2), sdy = (p.vx + p.vy) * (TILE_H / 2);
+      g.rotation = Math.atan2(sdy, sdx);
+      g.zIndex = depthOf(p.x, p.y) + 0.4;
+    }
+    // Boya de pesca.
+    if (this.fishData) {
+      this.bobT += dt;
+      if (!this.fishBob) { this.fishBob = new Graphics(); this.entities.addChild(this.fishBob); }
+      const b = this.fishBob; b.visible = true; b.clear();
+      const bob = Math.sin(this.bobT * 4) * 2;
+      b.ellipse(0, 4, 5, 2).fill({ color: 0x000000, alpha: 0.18 });
+      b.circle(0, -2 + bob, 2.4).fill({ color: 0xe14b4b });
+      b.circle(0, -2 + bob, 2.4).stroke({ width: 1, color: 0xffffff, alpha: 0.7 });
+      b.rect(-0.6, -6 + bob, 1.2, 4).fill({ color: 0xf2f2f2 });
+      const s = gridToScreen(this.fishData.x, this.fishData.y);
+      b.x = s.x; b.y = s.y - this.elevAtL(this.fishData.x, this.fishData.y) * MAX_ELEV_PX;
+      b.zIndex = depthOf(this.fishData.x, this.fishData.y) + 0.5;
+    } else if (this.fishBob) { this.fishBob.visible = false; }
+  }
+
   private makeAnimal(type: AnimalType, variant = 0): Container {
     if (type === 'villager') return this.makeVillager(variant);
     const g = new Graphics();
+    if (type === 'skeleton' || type === 'zombie' || type === 'spider' || type === 'slime' || type === 'wraith') return this.makeEnemy(type);
     if (type === 'bat') {
       g.ellipse(0, -1, 5, 2).fill({ color: 0x000000, alpha: 0.18 });
       const by = -17;
@@ -1045,34 +1198,6 @@ export class GameRenderer {
       g.poly([2.4, by - 2.5, 1, by - 6, 0, by - 2.5]).fill({ color: 0x1f1a26 });
       g.circle(-1, by - 0.5, 0.7).fill({ color: 0xe0655a });
       g.circle(1, by - 0.5, 0.7).fill({ color: 0xe0655a });
-      return g;
-    }
-    if (type === 'frog') {
-      g.ellipse(0, -1, 8, 3).fill({ color: 0x000000, alpha: 0.2 });
-      g.ellipse(-8, -2, 3, 2).fill({ color: 0x3f7a34 });
-      g.ellipse(8, -2, 3, 2).fill({ color: 0x3f7a34 });
-      g.ellipse(0, -5, 9, 6).fill({ color: 0x4f9a3f });
-      g.ellipse(0, -6, 6, 4).fill({ color: 0x63b552 });
-      g.circle(-3.5, -10, 2.4).fill({ color: 0x63b552 });
-      g.circle(3.5, -10, 2.4).fill({ color: 0x63b552 });
-      g.circle(-3.5, -10.5, 1.2).fill({ color: 0x1a1a12 });
-      g.circle(3.5, -10.5, 1.2).fill({ color: 0x1a1a12 });
-      g.moveTo(-4, -4); g.lineTo(4, -4); g.stroke({ width: 1, color: 0x2c5023 });
-      return g;
-    }
-    if (type === 'monkey') {
-      g.ellipse(0, -1, 9, 4).fill({ color: 0x000000, alpha: 0.2 });
-      g.moveTo(7, -6); g.quadraticCurveTo(16, -10, 12, -18); g.stroke({ width: 2.4, color: 0x6b4a2b });
-      g.rect(-8, -14, 3, 8).fill({ color: 0x6b4a2b });
-      g.rect(5, -14, 3, 8).fill({ color: 0x6b4a2b });
-      g.roundRect(-6, -16, 12, 13, 5).fill({ color: 0x7a5433 });
-      g.ellipse(0, -6, 5, 4).fill({ color: 0xc9a06a });
-      g.circle(-5, -22, 2.2).fill({ color: 0x7a5433 });
-      g.circle(5, -22, 2.2).fill({ color: 0x7a5433 });
-      g.circle(0, -20, 6).fill({ color: 0x7a5433 });
-      g.ellipse(0, -19, 4, 3.4).fill({ color: 0xc9a06a });
-      g.circle(-2, -21, 1).fill({ color: 0x1a1a12 });
-      g.circle(2, -21, 1).fill({ color: 0x1a1a12 });
       return g;
     }
     g.ellipse(0, -1, 14, 5).fill({ color: 0x000000, alpha: 0.2 });
@@ -1122,6 +1247,63 @@ export class GameRenderer {
     return g;
   }
 
+  // Enemigos hostiles con estética pixel-art del juego (Tanda O).
+  private makeEnemy(type: AnimalType): Container {
+    const g = new Graphics();
+    g.ellipse(0, -1, 11, 4).fill({ color: 0x000000, alpha: 0.22 });
+    if (type === 'skeleton') {
+      for (const lx of [-3.2, 1.4]) g.rect(lx, -7, 2, 7).fill({ color: 0xdedacb });
+      g.roundRect(-5, -17, 10, 11, 2).fill({ color: 0xe9e5d6 }); // caja torácica
+      for (const ry of [-15, -12.5, -10]) g.rect(-5, ry, 10, 1.1).fill({ color: 0x9a9789 });
+      g.rect(-0.8, -17, 1.6, 11).fill({ color: 0xcdc9ba }); // esternón
+      g.rect(-9, -15, 4.6, 1.8).fill({ color: 0xdedacb }); // brazo con arco
+      g.circle(-8, -13, 5).stroke({ width: 1.4, color: 0x8a6b3f }); // arco
+      g.circle(0, -22, 4.6).fill({ color: 0xf1eddf }); // cráneo
+      g.ellipse(-1.6, -22, 1.3, 1.6).fill({ color: 0x2a2a2a });
+      g.ellipse(1.6, -22, 1.3, 1.6).fill({ color: 0x2a2a2a });
+      g.rect(-2, -18.5, 4, 1).fill({ color: 0x8a8779 });
+    } else if (type === 'zombie') {
+      for (const lx of [-4, 1.4]) g.rect(lx, -7, 2.8, 7).fill({ color: 0x35502f });
+      g.roundRect(-5.5, -17, 11, 11, 2).fill({ color: 0x4c7a3f }); // torso
+      g.rect(-3, -15, 6, 5).fill({ color: 0x3c6233, alpha: 0.6 }); // ropa rota
+      g.rect(-11, -15.5, 6, 3).fill({ color: 0x6a8f4a }); // brazos extendidos
+      g.rect(5, -15.5, 6, 3).fill({ color: 0x6a8f4a });
+      g.roundRect(-4.5, -25, 9, 8, 2).fill({ color: 0x6f9a54 }); // cabeza
+      g.rect(-3, -22.5, 2.4, 1.8).fill({ color: 0x1c2a16 });
+      g.rect(1.2, -22.5, 2.4, 1.8).fill({ color: 0x1c2a16 });
+      g.rect(-2.4, -19, 5, 1).fill({ color: 0x24301a });
+    } else if (type === 'spider') {
+      g.ellipse(0, -1, 15, 5).fill({ color: 0x000000, alpha: 0.22 });
+      for (const s of [-1, 1]) for (const [ay, ln] of [[-9, 12], [-7, 13], [-5, 12]] as const) {
+        g.moveTo(0, -6).lineTo(s * ln, ay).stroke({ width: 1.6, color: 0x1c1720 });
+      }
+      g.ellipse(4, -7, 8, 6).fill({ color: 0x241d29 }); // abdomen
+      g.ellipse(4, -8, 3, 2).fill({ color: 0x3a2f40, alpha: 0.7 });
+      g.ellipse(-6, -8, 5, 4).fill({ color: 0x2c2431 }); // cabeza
+      g.circle(-8, -9, 1).fill({ color: 0xe0554a });
+      g.circle(-6, -9.6, 1).fill({ color: 0xe0554a });
+      g.circle(-9.2, -7.6, 0.7).fill({ color: 0xe0554a });
+      g.circle(-6.6, -7.2, 0.7).fill({ color: 0xe0554a });
+    } else if (type === 'slime') {
+      g.roundRect(-8, -12, 16, 12, 5).fill({ color: 0x5fb85a, alpha: 0.88 }); // cuerpo
+      g.roundRect(-8, -12, 16, 12, 5).stroke({ width: 1.2, color: 0x3f8f3c, alpha: 0.7 });
+      g.roundRect(-5, -10, 6, 4, 2).fill({ color: 0xa6e79f, alpha: 0.7 }); // brillo
+      g.circle(-3, -6, 1.4).fill({ color: 0x173d15 });
+      g.circle(3, -6, 1.4).fill({ color: 0x173d15 });
+      g.rect(-2, -3.5, 4, 1).fill({ color: 0x173d15 });
+    } else { // wraith (espectro)
+      g.ellipse(0, -1, 8, 3).fill({ color: 0x1a1030, alpha: 0.18 });
+      g.poly([-8, -8, -5, -2, -2, -6, 0, -1, 2, -6, 5, -2, 8, -8, 6, -20, -6, -20]).fill({ color: 0x6a5aa6, alpha: 0.8 }); // manto ondulado
+      g.roundRect(-6.5, -26, 13, 9, 5).fill({ color: 0x7c6cc0, alpha: 0.85 }); // capucha
+      g.ellipse(0, -19, 6.5, 7).fill({ color: 0x241d3a }); // hueco oscuro
+      g.circle(-2.4, -20, 1.5).fill({ color: 0x9be1ff });
+      g.circle(2.4, -20, 1.5).fill({ color: 0x9be1ff });
+      g.circle(-2.4, -20, 2.6).fill({ color: 0x9be1ff, alpha: 0.25 });
+      g.circle(2.4, -20, 2.6).fill({ color: 0x9be1ff, alpha: 0.25 });
+    }
+    return g;
+  }
+
   private update(dtMs: number): void {
     if (!this.app || !this.player) { this.drawDarkness(); return; }
     const dt = dtMs / 1000;
@@ -1138,7 +1320,11 @@ export class GameRenderer {
       this.jumpVel -= 900 * dt;
       if (this.jumpOff <= 0) { this.jumpOff = 0; this.jumpVel = 0; }
     }
-    this.player.x = ps.x; this.player.y = py - this.jumpOff; this.player.zIndex = depthOf(this.prx, this.pry) + 0.3;
+    // Bajada física: el sprite se hunde en el agujero (o emerge al subir) según el fundido.
+    const sink = this.caveFade * 26;
+    this.player.x = ps.x; this.player.y = py - this.jumpOff + sink; this.player.zIndex = depthOf(this.prx, this.pry) + 0.3;
+    this.player.alpha = 1 - this.caveFade * 0.6;
+    this.drawCaveWipe();
     // El paneo se recentra poco a poco mientras caminas.
     if (this.spdEMA > 0.5 && !this.panning) { this.panX *= 0.9; this.panY *= 0.9; }
     const z = this.zoom;
@@ -1191,6 +1377,7 @@ export class GameRenderer {
       const s = gridToScreen(ra.rx, ra.ry);
       ra.sprite.x = s.x; ra.sprite.y = s.y - this.elevAtL(ra.rx, ra.ry) * MAX_ELEV_PX; ra.sprite.zIndex = depthOf(ra.rx, ra.ry) + 0.1;
     }
+    this.updateProjectiles(dt);
     for (const rn of this.nodes.values()) if (rn.pulse > 0) { rn.pulse = Math.max(0, rn.pulse - dt * 6); rn.sprite.scale.set(1 + 0.16 * rn.pulse); }
     for (let i = this.floats.length - 1; i >= 0; i--) {
       const f = this.floats[i]; f.life += dt; f.text.y -= dt * 26; f.text.alpha = Math.max(0, 1 - f.life);

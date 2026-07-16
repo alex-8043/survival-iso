@@ -170,6 +170,10 @@
       .armor-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; opacity: .5; pointer-events: none; }
       .armor-def { font-size: 12px; opacity: .85; }
       .armor-def b { color: var(--gold); }
+      #armor-hud { position: fixed; bottom: 66px; left: 50%; transform: translateX(-50%); z-index: 24; display: none; align-items: center; gap: 3px; background: rgba(0,0,0,.42); padding: 3px 9px; border-radius: 8px; }
+      .ahud-n { color: #cfe0ff; font-size: 12px; font-weight: 700; margin-right: 5px; }
+      .apip { width: 9px; height: 12px; background: #3a3f4a; clip-path: polygon(50% 0, 100% 30%, 100% 72%, 50% 100%, 0 72%, 0 30%); }
+      .apip.on { background: linear-gradient(#e6eefb, #9fb0c8); box-shadow: 0 0 3px rgba(180,210,255,.4); }
 
       /* Crafteo: cabecera, sprites de salida e ingredientes */
       .craft-title { display: flex; align-items: center; gap: 8px; }
@@ -249,23 +253,24 @@
               --mc-slot:#8b8b8b; --mc-slot-lo:#373737; --mc-green:#5fa040; }
 
       /* Marcos de panel: gris piedra con bisel 3D y borde negro. */
-      #panel .panel-card, #craft .craft-card-wrap, #chest .chest-card, #village .village-card {
+      #panel .panel-card, #craft .craft-card-wrap, #chest .chest-card, #village .village-card, #furnace .furnace-card {
         background: var(--mc-face); border: 0; border-radius: 0; color: var(--mc-ink);
         font-family: 'VT323', monospace; font-size: 19px; line-height: 1.15;
         box-shadow: inset 3px 3px 0 var(--mc-hi), inset -3px -3px 0 var(--mc-lo),
                     0 0 0 3px #1b1b1b, 0 7px 0 3px rgba(0,0,0,.35);
       }
       #panel .panel-card *, #craft .craft-card-wrap *, #chest .chest-card *,
-      #village .village-card * { border-radius: 0 !important; }
+      #village .village-card *, #furnace .furnace-card * { border-radius: 0 !important; }
       #panel .panel-left { border-right: 3px solid var(--mc-lo); }
       #panel .pstat-l, #panel .pname, #panel .pempty, #chest .vrow-name,
       #village .vrow-name, #village .vrow-have, #village .vq-txt,
       #craft .needs, #craft .craft-name, #craft .craft-empty { color: var(--mc-ink); }
-      #panel .panel-close, #craft .panel-close, #chest .panel-close, #village .panel-close { color: #1b1b1b; opacity: .85; }
+      #panel .panel-close, #craft .panel-close, #chest .panel-close, #village .panel-close, #furnace .panel-close { color: #1b1b1b; opacity: .85; }
+      #furnace .armor-hint { color: #3a2e10; opacity: .7; }
 
       /* Títulos y etiquetas: fuente pixel con sombra dura. */
-      #panel h3, #craft h3, #chest h3, #village h3,
-      #panel .inv-bar-label, #craft .craft-title {
+      #panel h3, #craft h3, #chest h3, #village h3, #furnace h3,
+      #panel .inv-bar-label, #craft .craft-title, #furnace .inv-bar-label {
         font-family: 'Press Start 2P', monospace; font-size: 12px; line-height: 1.5;
         color: #3a2e10; text-shadow: 1px 1px 0 rgba(255,255,255,.4);
       }
@@ -275,12 +280,12 @@
       }
 
       /* Ranuras: hueco "hundido" gris (bisel invertido). */
-      #panel .islot, #chest .islot, #panel .pslot, #hotbar .hslot {
+      #panel .islot, #chest .islot, #panel .pslot, #hotbar .hslot, #furnace .islot {
         background: var(--mc-slot) !important; border: 0 !important;
         box-shadow: inset 2px 2px 0 var(--mc-slot-lo), inset -2px -2px 0 var(--mc-hi);
       }
-      #panel .inv-bar .islot { background: #7c7c7c !important; }
-      #panel .icount, #chest .icount, #panel .pcount, #hotbar .hcount { color: #fff; text-shadow: 1px 1px 0 #000; }
+      #panel .inv-bar .islot, #furnace .inv-bar .islot { background: #7c7c7c !important; }
+      #panel .icount, #chest .icount, #panel .pcount, #hotbar .hcount, #furnace .icount { color: #fff; text-shadow: 1px 1px 0 #000; }
       .isprite, .hicon, .craft-out, .ing-ic, .vrow-ic, .pswatch, .craft-title-ic { image-rendering: pixelated; }
 
       /* Hotbar: barra de piedra clásica con selección blanca. */

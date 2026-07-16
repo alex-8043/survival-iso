@@ -24,6 +24,9 @@ export const BOAT_MULT = 0.95; // con barca: casi como en tierra (ya no más rá
 export const SAVE_VERSION = 3; // 3: añade ediciones de terreno y fluidos
 export const AUTOSAVE_S = 8; // autoguardado cada N segundos (además del volcado al cerrar)
 
+// Bajada/subida física a la cueva (segundos de la animación de descenso).
+export const CAVE_TRANSITION_S = 1.0;
+
 // Ciclo día/noche
 export const DAY_LENGTH_S = 1200; // 20 min por ciclo completo (~10 día + ~10 noche)
 export const NIGHT_MAX_DARK = 0.6; // opacidad máxima del oscurecimiento nocturno
@@ -44,6 +47,6 @@ export const ANIMAL_HEALTH = 3; // golpes para abatir (fallback)
 export const SPAWN_RADIUS = 20; // radio de aparición/desaparición (tiles)
 export const ANIMAL_SPAWN_S = 3.2; // segundos entre intentos de aparición
 
-// Mobs de cueva (murciélagos)
-export const CAVE_MOB_CAP = 4; // máximo dentro de una cueva
-export const CAVE_MOB_SPAWN_S = 5; // segundos entre intentos
+// Mobs de cueva (murciélagos + enemigos hostiles)
+export const CAVE_MOB_CAP = 6; // máximo dentro de una cueva
+export const CAVE_MOB_SPAWN_S = 4; // segundos entre intentos

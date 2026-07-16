@@ -3,22 +3,31 @@
 
 import type { NodeKind } from './worldgen';
 
-export type AnimalType = 'cow' | 'pig' | 'chicken' | 'sheep' | 'bat' | 'frog' | 'monkey' | 'villager';
+export type AnimalType =
+  | 'cow' | 'pig' | 'chicken' | 'sheep' | 'bat' | 'villager'
+  | 'skeleton' | 'zombie' | 'spider' | 'slime' | 'wraith';
 // Animales genéricos de superficie (hierba/bosque).
 export const ANIMAL_TYPES: AnimalType[] = ['cow', 'pig', 'chicken', 'sheep'];
 // Mobs que sólo aparecen dentro de cuevas.
-export const CAVE_MOBS: AnimalType[] = ['bat'];
+export const CAVE_MOBS: AnimalType[] = ['bat', 'skeleton', 'zombie', 'spider', 'slime'];
+// Enemigos hostiles que aparecen de noche en la superficie.
+export const SURFACE_HOSTILES: AnimalType[] = ['zombie', 'skeleton', 'spider', 'wraith'];
 
-export interface AnimalInfo { health: number; speed: number; }
+// hostile: persigue y ataca al jugador. damage: daño por golpe. aggro: radio de
+// detección en tiles. ranged: dispara flechas a distancia (esqueleto).
+export interface AnimalInfo { health: number; speed: number; hostile?: boolean; damage?: number; aggro?: number; ranged?: boolean; }
 export const ANIMAL_INFO: Record<AnimalType, AnimalInfo> = {
   cow: { health: 3, speed: 1.3 },
   pig: { health: 3, speed: 1.5 },
   chicken: { health: 2, speed: 1.8 },
   sheep: { health: 3, speed: 1.3 },
   bat: { health: 2, speed: 2.6 },
-  frog: { health: 1, speed: 1.6 },
-  monkey: { health: 2, speed: 2.2 },
   villager: { health: 9999, speed: 0.7 }, // no se ataca; deambula por la aldea
+  skeleton: { health: 5, speed: 1.35, hostile: true, damage: 4, aggro: 10, ranged: true },
+  zombie: { health: 6, speed: 1.05, hostile: true, damage: 6, aggro: 7 },
+  spider: { health: 4, speed: 2.1, hostile: true, damage: 4, aggro: 9 },
+  slime: { health: 4, speed: 1.15, hostile: true, damage: 3, aggro: 6 },
+  wraith: { health: 7, speed: 1.7, hostile: true, damage: 7, aggro: 9 },
 };
 
 export type ToolKind = 'axe' | 'pickaxe' | 'sword';
@@ -34,6 +43,8 @@ export interface ItemDef {
   boat?: boolean;
   defense?: number;
   armor?: 'helmet' | 'chest' | 'legs' | 'boots'; // pieza de armadura equipable
+  weapon?: 'bow'; // arma a distancia (consume flechas)
+  fishing?: boolean; // caña de pescar (pesca en aguas grandes)
 }
 
 export const ITEMS: Record<string, ItemDef> = {
@@ -47,6 +58,12 @@ export const ITEMS: Record<string, ItemDef> = {
   leather: { id: 'leather', name: 'Cuero', color: 0x7a5433 },
   wool: { id: 'wool', name: 'Lana', color: 0xe8e6de },
   feather: { id: 'feather', name: 'Pluma', color: 0xd7d2c8 },
+  // Botín de enemigos (Tanda O).
+  bone: { id: 'bone', name: 'Hueso', color: 0xe8e4d2 },
+  string: { id: 'string', name: 'Cuerda', color: 0xd8d2c0 },
+  rotten_flesh: { id: 'rotten_flesh', name: 'Carne podrida', color: 0x6f7a3a, food: 5 },
+  slimeball: { id: 'slimeball', name: 'Bola de limo', color: 0x7ad86a },
+  arrow: { id: 'arrow', name: 'Flecha', color: 0xcfc6b4 },
   coal: { id: 'coal', name: 'Carbón', color: 0x2b2b32 },
   iron_ore: { id: 'iron_ore', name: 'Mineral de hierro', color: 0xa98f74 },
   iron_ingot: { id: 'iron_ingot', name: 'Lingote de hierro', color: 0xd2d9e2 },
@@ -99,6 +116,12 @@ export const ITEMS: Record<string, ItemDef> = {
   torch: { id: 'torch', name: 'Antorcha', color: 0xffb648, place: 'torch' },
 
   boat: { id: 'boat', name: 'Barca', color: 0x8a5a2b, boat: true, place: 'boat' },
+
+  // Armas/utensilios a distancia (Tanda O).
+  bow: { id: 'bow', name: 'Arco', color: 0x8a5a2b, weapon: 'bow' },
+  fishing_rod: { id: 'fishing_rod', name: 'Caña de pescar', color: 0x8a5a2b, fishing: true },
+  raw_fish: { id: 'raw_fish', name: 'Pescado crudo', color: 0x7fa8c0, food: 8 },
+  cooked_fish: { id: 'cooked_fish', name: 'Pescado cocinado', color: 0xc79a5a, food: 30 },
 };
 
 // Durabilidad máxima por nivel de herramienta (1=madera .. 5=diamante).
@@ -115,6 +138,7 @@ export const SMELT: Record<string, { out: string; time: number }> = {
   iron_ore: { out: 'iron_ingot', time: 15 },
   gold_ore: { out: 'gold_ingot', time: 15 },
   meat: { out: 'cooked_meat', time: 10 },
+  raw_fish: { out: 'cooked_fish', time: 10 },
 };
 // Combustibles: ítem -> segundos de quema que aporta.
 export const FUEL: Record<string, number> = {
@@ -158,9 +182,18 @@ export const ANIMAL_DROPS: Record<AnimalType, DropDef[]> = {
     { item: 'wool', min: 1, max: 2 },
   ],
   bat: [{ item: 'leather', min: 0, max: 1 }],
-  frog: [],
-  monkey: [],
   villager: [],
+  skeleton: [
+    { item: 'bone', min: 1, max: 2 },
+    { item: 'arrow', min: 2, max: 4 },
+  ],
+  zombie: [{ item: 'rotten_flesh', min: 1, max: 2 }],
+  spider: [{ item: 'string', min: 1, max: 2 }],
+  slime: [{ item: 'slimeball', min: 1, max: 3 }],
+  wraith: [
+    { item: 'bone', min: 1, max: 2 },
+    { item: 'coin', min: 1, max: 2 },
+  ],
 };
 
 export function toolFor(item: string | null): ItemDef['tool'] | undefined {

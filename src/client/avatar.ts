@@ -85,7 +85,9 @@ export function toolIconCanvas(kind: string, tier: number): HTMLCanvasElement {
 }
 
 // (cx, cy) = pies; s = escala.
-export function drawAvatar(ctx: CanvasRenderingContext2D, c: Customization, cx: number, cy: number, s: number, action: AvatarAction = 'idle', t = 0, held: HeldTool | null = null): void {
+export interface ArmorColors { helmet?: number; chest?: number; legs?: number; boots?: number; }
+
+export function drawAvatar(ctx: CanvasRenderingContext2D, c: Customization, cx: number, cy: number, s: number, action: AvatarAction = 'idle', t = 0, held: HeldTool | null = null, armor: ArmorColors | null = null): void {
   const skin = SKIN_TONES[c.skin], hairC = HAIR_COLORS[c.hairColor], shirt = CLOTH_COLORS[c.shirt], pants = PANTS_COLORS[c.pants], eye = EYE_COLORS[c.eyes];
   const w = [0.82, 1, 1.22][c.physique];
   const ph = t * Math.PI * 2;
@@ -128,12 +130,29 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, c: Customization, cx: 
     rr(ctx, lx, hipY, 5 * w * s, footY - hipY, 2 * s);
     ctx.fillStyle = css(shade(pants, 0.6)); rr(ctx, lx, footY - 2.5 * s, 5 * w * s, 2.5 * s, 1 * s); ctx.fillStyle = css(pants);
   }
+  // Armadura: perneras y botas (sobre los pantalones).
+  if (armor?.legs || armor?.boots) for (let i = 0; i < 2; i++) {
+    const lx = cx + (i === 0 ? -6 * w : 1 * w) * s;
+    const footY = cy - legLift[i] * s;
+    if (armor.legs) { ctx.fillStyle = css(armor.legs); rr(ctx, lx - 0.5 * s, hipY, (5 * w + 1) * s, (footY - hipY) * 0.55, 2 * s); ctx.fillStyle = css(shade(armor.legs, 0.75)); rr(ctx, lx - 0.5 * s, hipY, (5 * w + 1) * s, 2 * s, 1 * s); }
+    if (armor.boots) { ctx.fillStyle = css(armor.boots); rr(ctx, lx - 0.8 * s, footY - 4.5 * s, (5 * w + 1.6) * s, 4.5 * s, 1.5 * s); }
+  }
+  ctx.fillStyle = css(pants);
 
   // brazo trasero
   limb(ctx, headX - (bodyW / 2) * s, bodyY + 5 * s, cx + hand[0].x * s, bodyY + hand[0].y * s, 4.5 * s, shade(shirt, 0.82));
   ctx.fillStyle = css(skin); circ(ctx, cx + hand[0].x * s, bodyY + hand[0].y * s, 2.6 * s);
 
   ctx.fillStyle = css(shirt); rr(ctx, headX - (bodyW / 2) * s, bodyY, bodyW * s, 24 * s, 5 * s);
+
+  // Armadura: peto (sobre la camiseta) con hombreras y brillo.
+  if (armor?.chest) {
+    ctx.fillStyle = css(armor.chest);
+    rr(ctx, headX - (bodyW / 2 + 1) * s, bodyY - 1 * s, (bodyW + 2) * s, 16 * s, 4 * s);
+    circ(ctx, headX - (bodyW / 2) * s, bodyY + 3 * s, 3.6 * s); circ(ctx, headX + (bodyW / 2) * s, bodyY + 3 * s, 3.6 * s);
+    ctx.fillStyle = css(shade(armor.chest, 1.25)); rr(ctx, headX - (bodyW / 2 - 1) * s, bodyY + 1 * s, 2.5 * s, 12 * s, 1 * s);
+    ctx.fillStyle = css(shade(armor.chest, 0.7)); rr(ctx, headX - (bodyW / 2 + 1) * s, bodyY + 12 * s, (bodyW + 2) * s, 3 * s, 2 * s);
+  }
 
   ctx.fillStyle = css(skin);
   circ(ctx, headX - headR + 1.5 * s, headY, 2 * s); circ(ctx, headX + headR - 1.5 * s, headY, 2 * s); circ(ctx, headX, headY, headR);
@@ -142,6 +161,14 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, c: Customization, cx: 
   drawBeard(ctx, c.beard, headX, headY, headR, hairC, s);
   drawHair(ctx, c.hair, headX, headY, headR, hairC, s);
   drawHat(ctx, c.hat, headX, headY, headR, s);
+  // Armadura: casco (cubre la parte superior de la cabeza).
+  if (armor?.helmet) {
+    ctx.fillStyle = css(armor.helmet);
+    ctx.beginPath(); ctx.arc(headX, headY - 0.5 * s, headR + 1.5 * s, Math.PI * 0.92, Math.PI * 2.08); ctx.fill();
+    rr(ctx, headX - headR - 1 * s, headY - 1.5 * s, (headR * 2 + 2), 3 * s, 1 * s);
+    ctx.fillStyle = css(shade(armor.helmet, 0.68)); rr(ctx, headX - headR + 1 * s, headY + 1 * s, headR * 2 - 2 * s, 2 * s, 1 * s); // ranura visor
+    ctx.fillStyle = css(shade(armor.helmet, 1.3)); circ(ctx, headX - headR * 0.4, headY - headR * 0.5, 1.3 * s); // brillo
+  }
 
   // brazo delantero
   const hpx = cx + hand[1].x * s, hpy = bodyY + hand[1].y * s;
@@ -180,10 +207,20 @@ function drawHat(ctx: CanvasRenderingContext2D, style: number, cx: number, hy: n
   else { ctx.fillStyle = css(0x3a4a35); ctx.beginPath(); ctx.arc(cx, hy, hr + 3 * s, Math.PI * 0.9, Math.PI * 2.1); ctx.fill(); }
 }
 
-export function avatarCanvas(c: Customization, s: number, action: AvatarAction = 'idle', t = 0, held: HeldTool | null = null): HTMLCanvasElement {
+export function avatarCanvas(c: Customization, s: number, action: AvatarAction = 'idle', t = 0, held: HeldTool | null = null, armor: ArmorColors | null = null): HTMLCanvasElement {
   const cv = document.createElement('canvas');
   cv.width = Math.ceil(70 * s); cv.height = Math.ceil(80 * s);
   const ctx = cv.getContext('2d')!;
-  drawAvatar(ctx, c, cv.width / 2, cv.height - 5 * s, s, action, t, held);
+  drawAvatar(ctx, c, cv.width / 2, cv.height - 5 * s, s, action, t, held, armor);
   return cv;
+}
+
+// Color representativo de una pieza de armadura por su id (cuero/hierro/oro/diamante).
+export function armorColor(itemId: string | undefined): number | undefined {
+  if (!itemId) return undefined;
+  if (itemId.startsWith('leather')) return 0x8a6b45;
+  if (itemId.startsWith('iron')) return 0xc9d2dc;
+  if (itemId.startsWith('gold')) return 0xf2cf5a;
+  if (itemId.startsWith('diamond')) return 0x6fe6e0;
+  return 0xb0b0b0;
 }

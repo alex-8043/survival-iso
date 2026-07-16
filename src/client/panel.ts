@@ -76,6 +76,7 @@ function render(): void {
   const grid = Array.from({ length: INV_MAIN }, (_, i) => cell(i)).join('');
   const bar = Array.from({ length: INV_HOTBAR }, (_, i) => cell(INV_MAIN + i)).join('');
   const totalDef = armor.reduce((n, s) => n + (s ? (ITEMS[s.id]?.defense ?? 0) : 0), 0);
+  const armorScore = Math.min(10, Math.round((totalDef * 10) / 24));
 
   p.innerHTML = `
     <div class="panel-card">
@@ -84,7 +85,7 @@ function render(): void {
         <canvas id="panel-av" width="150" height="200"></canvas>
         <div class="armor-row">
           <div class="armor-cells">${armorCell(0, 'Casco')}${armorCell(1, 'Pechera')}${armorCell(2, 'Piernas')}${armorCell(3, 'Botas')}</div>
-          <div class="armor-def">Defensa: <b>${totalDef}</b></div>
+          <div class="armor-def">Armadura: <b>${armorScore}/10</b></div>
         </div>
         <div class="pstats">${statsHtml}</div>
       </div>

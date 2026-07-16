@@ -96,6 +96,19 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
     setInputEnabled(!on);
   };
 
+  // Indicador de armadura sobre 10 (barra de escudos, estilo Minecraft).
+  const updateArmorHud = (slots: Slot[]): void => {
+    let def = 0;
+    for (const s of slots) if (s) def += ITEMS[s.id]?.defense ?? 0;
+    const score = Math.min(10, Math.round((def * 10) / 24)); // 24 = set completo de diamante
+    let el = document.getElementById('armor-hud');
+    if (!el) { el = document.createElement('div'); el.id = 'armor-hud'; document.body.appendChild(el); }
+    el.style.display = score > 0 ? 'flex' : 'none';
+    let pips = '';
+    for (let i = 0; i < 10; i++) pips += `<span class="apip${i < score ? ' on' : ''}"></span>`;
+    el.innerHTML = `<span class="ahud-n">${score}/10</span>${pips}`;
+  };
+
   const refreshInv = (inv: Slot[], silent = false) => {
     if (!silent) {
       const prev = slotCounts(lastSlots);
@@ -160,6 +173,8 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
         break;
       case 'armor':
         setPanelArmor(m.slots);
+        renderer.setAvatarArmor(m.slots);
+        updateArmorHud(m.slots);
         break;
       case 'furnace':
         setFurnaceView(m);
@@ -186,6 +201,8 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   worker.postMessage({ t: 'init', mode, save: save ?? undefined });
 
   renderer.onInteract = (active, target) => worker.postMessage({ t: 'interact', active, target });
+  renderer.onShoot = (x, y) => worker.postMessage({ t: 'shoot', x, y });
+  renderer.onFish = (x, y) => worker.postMessage({ t: 'fish', x, y });
   renderer.onPlace = (x, y, item) => worker.postMessage({ t: 'place', item, x, y });
   renderer.onOpenStation = (type) => openStationCraft(type);
   renderer.onOpenChest = (id) => { worker.postMessage({ t: 'openChest', id }); openChestPanel(id, lastSlots); };
@@ -232,6 +249,11 @@ function startGame(renderer: GameRenderer, mode: 'new' | 'continue', custom: Cus
   });
 
   setupInput((state) => worker.postMessage({ t: 'input', input: state }));
+
+  // Hook de pruebas visuales, sólo activo con ?dbg en la URL (inerte en juego normal).
+  if (new URLSearchParams(window.location.search).has('dbg')) {
+    (window as unknown as { __spawnEnemies: () => void }).__spawnEnemies = () => worker.postMessage({ t: 'debugSpawn' } as never);
+  }
 
   window.addEventListener('keydown', (e) => {
     if (e.repeat || isCapturing()) return;

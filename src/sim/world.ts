@@ -21,13 +21,14 @@ import {
   ANIMAL_SPAWN_S,
   CAVE_MOB_CAP,
   CAVE_MOB_SPAWN_S,
+  CAVE_TRANSITION_S,
   SAVE_VERSION,
 } from '../shared/constants';
 import { hash2 } from '../shared/noise';
 import { tileAt, levelAt, nodeAt, isWater, playerBlocked, caveTile, caveNodeAt, caveSeedFor, caveEntranceAt, caveSizeFor, springAt, TERRAIN, MAX_BLOCK, BEDROCK_LEVEL, WATER_SURFACE, terrainTopMaterial, materialItem, subsurfaceMaterial, villageLayoutAt, isHouseWall, nearestVillage, VILLAGE_SCAN } from '../shared/worldgen';
 import type { NodeKind } from '../shared/worldgen';
 import type { TerrainEdit, FluidEdit } from '../shared/protocol';
-import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, ANIMAL_INFO, ITEMS, toolFor, toolMaxDur, SMELT, FUEL } from '../shared/items';
+import { NODE_KINDS, ANIMAL_DROPS, ANIMAL_TYPES, CAVE_MOBS, SURFACE_HOSTILES, ANIMAL_INFO, ITEMS, toolFor, toolMaxDur, SMELT, FUEL } from '../shared/items';
 import type { AnimalType } from '../shared/items';
 import { recipeById } from '../shared/recipes';
 import { SELL, BUY, questFor, villagerId } from '../shared/trades';
@@ -39,8 +40,14 @@ export const Position = defineComponent({ x: Types.f32, y: Types.f32 });
 export interface Animal {
   id: number; type: AnimalType; x: number; y: number; tx: number; ty: number; wait: number; health: number; alive: boolean; layer: Location;
   vid?: number; vcx?: number; vcy?: number; // aldeanos: id de comercio + centro de su aldea
+  atkCd?: number; shootCd?: number; // enfriamiento de ataque cuerpo a cuerpo / disparo
 }
 export interface Floater { text: string; color: number; x: number; y: number; }
+
+// Proyectil (flecha) del jugador (arco) o de un enemigo a distancia (esqueleto).
+export interface Projectile { x: number; y: number; vx: number; vy: number; life: number; dmg: number; from: 'player' | 'mob'; layer: Location; }
+// Estado de pesca en curso (sólo en aguas grandes).
+export interface FishingState { t: number; until: number; x: number; y: number; }
 
 // Estado de un horno: 3 ranuras (combustible/material/salida) + progreso y quema.
 export interface FurnaceState {
@@ -69,6 +76,9 @@ export interface Sim {
   nextAnimalId: number;
   spawnTimer: number;
   caveMobTimer: number;
+  projectiles: Projectile[]; // flechas en vuelo (transitorio, no se guarda)
+  bowCd: number; // enfriamiento del arco del jugador
+  fishing: FishingState | null; // pesca activa (transitorio)
   inv: Slot[];
   armor: Slot[]; // [0]=casco, [1]=pechera
   chests: Record<number, Slot[]>;
@@ -84,6 +94,8 @@ export interface Sim {
   acceptedQuests: number[];
   caveCooldown: number;
   wasOnEntrance: boolean;
+  caveTransition: { dir: 'in' | 'out'; t: number; switched: boolean } | null; // bajada/subida física
+  descendFrom: { x: number; y: number } | null; // tile de la entrada por la que se desciende
   jumpTimer: number; // ventana tras saltar en la que se pueden subir 2 bloques
   dead: boolean; // sin vida (congelado hasta reaparecer)
   edits: Map<string, { lvl: number; top: string }>; // ediciones de terreno (superficie)
@@ -160,12 +172,13 @@ function baseSim(seed: number, spawn: { x: number; y: number }): Sim {
     harvestTimer: 0, harvestMax: 0, harvestKey: '', harvested: new Map(), depleted: new Set(),
     structures: [], nextStructId: 1,
     animals: [], nextAnimalId: 1, spawnTimer: 0, caveMobTimer: 0,
+    projectiles: [], bowCd: 0, fishing: null,
     inv: makeSlots(INV_SIZE), armor: makeSlots(4), chests: {}, furnaces: {},
     stats: { health: 100, food: 100, thirst: 100, stamina: 100 },
     timeS: DAY_LENGTH_S * 0.3, tick: 0,
     location: 'surface', caveSeed: 0, surfaceReturn: null, caveEntrance: null, riding: false,
     acceptedQuests: [],
-    caveCooldown: 0, wasOnEntrance: false, jumpTimer: 0, dead: false,
+    caveCooldown: 0, wasOnEntrance: false, caveTransition: null, descendFrom: null, jumpTimer: 0, dead: false,
     edits: new Map(), fluids: new Map(), floodQueue: [],
     village: null, villageWalls: new Set(), villageBlocked: new Set(), villagesLooted: new Set(),
     torches: new Set(),
@@ -317,11 +330,31 @@ function trySpawnAnimal(sim: Sim): void {
     const t = tileAt(x, y, sim.seed);
     if (!t.passable || isWater(t.terrain)) continue;
     let type: AnimalType;
-    if (t.terrain === TERRAIN.SWAMP) type = 'frog';
-    else if (t.terrain === TERRAIN.JUNGLE) type = 'monkey';
-    else if (t.terrain === TERRAIN.DESERT || t.terrain === TERRAIN.SNOW) continue; // biomas sin ganado
+    if (t.terrain === TERRAIN.DESERT || t.terrain === TERRAIN.SNOW) continue; // biomas sin ganado
     else type = ANIMAL_TYPES[Math.floor(hash2(x, y, (sim.seed ^ 0xabc) | 0) * ANIMAL_TYPES.length)];
     sim.animals.push({ id: sim.nextAnimalId++, type, x, y, tx: x, ty: y, wait: hash2(x, y, 7) * 2, health: ANIMAL_INFO[type].health, alive: true, layer: 'surface' });
+    return;
+  }
+}
+
+// Enemigos de superficie: sólo aparecen de noche y lejos del jugador.
+function trySpawnHostile(sim: Sim): void {
+  const tod = (sim.timeS % DAY_LENGTH_S) / DAY_LENGTH_S;
+  if (tod >= 0.27 && tod <= 0.72) return; // sólo de noche
+  let host = 0;
+  for (const a of sim.animals) if (a.layer === 'surface' && ANIMAL_INFO[a.type].hostile) host++;
+  if (host >= 5) return;
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  for (let a = 0; a < 14; a++) {
+    const ang = hash2(sim.nextAnimalId * 7 + a, sim.tick + a * 5, (sim.seed ^ 0x51) | 0) * Math.PI * 2;
+    const dist = SPAWN_RADIUS * 0.7 + hash2(a, sim.nextAnimalId + 1, sim.seed) * SPAWN_RADIUS * 0.5;
+    const x = Math.round(px + Math.cos(ang) * dist);
+    const y = Math.round(py + Math.sin(ang) * dist);
+    const t = tileAt(x, y, sim.seed);
+    if (!t.passable || isWater(t.terrain)) continue;
+    if (sim.villageBlocked.has(keyOf(x, y)) || sim.villageWalls.has(keyOf(x, y))) continue; // no dentro de casas
+    const type = SURFACE_HOSTILES[Math.floor(hash2(x, y, (sim.seed ^ 0xf00d) | 0) * SURFACE_HOSTILES.length)];
+    sim.animals.push({ id: sim.nextAnimalId++, type, x, y, tx: x, ty: y, wait: hash2(x, y, 9) * 1.5, health: ANIMAL_INFO[type].health, alive: true, layer: 'surface' });
     return;
   }
 }
@@ -356,6 +389,9 @@ export function stepSim(sim: Sim, dt: number): StepResult {
   const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [], structuresChanged: false };
   const eid = sim.playerId;
   if (sim.dead) { sim.tick++; return res; } // congelado hasta reaparecer
+  // Bajada/subida física a la cueva: el jugador queda congelado mientras la
+  // pantalla se funde a negro y el cambio de capa ocurre a oscuras.
+  if (sim.caveTransition) { stepCaveTransition(sim, dt, res); sim.timeS += dt; sim.tick++; return res; }
   sim.timeS += dt;
   if (sim.jumpTimer > 0) sim.jumpTimer = Math.max(0, sim.jumpTimer - dt);
 
@@ -393,13 +429,12 @@ export function stepSim(sim: Sim, dt: number): StepResult {
     res.floaters.push({ text: 'Te bajas de la barca', color: 0x9edb8a, x: px, y: py });
   }
 
-  // Entrar/salir de cueva caminando: disparo por flanco (al pisar la entrada
-  // desde fuera) con enfriamiento para no rebotar al aparecer sobre la salida.
+  // Entrar/salir de cueva caminando: al pisar la entrada desde fuera arranca la
+  // BAJADA FÍSICA (fundido + descenso), no un teleport. Enfriamiento anti-rebote.
   if (sim.caveCooldown > 0) sim.caveCooldown -= dt;
   const onEnt = onEntranceOf(sim);
   if (onEnt && !sim.wasOnEntrance && sim.caveCooldown <= 0 && !sim.riding) {
-    toggleCave(sim, res);
-    sim.caveCooldown = 1.0;
+    beginCaveTransition(sim, res);
     sim.wasOnEntrance = true;
   } else {
     sim.wasOnEntrance = onEnt;
@@ -450,14 +485,17 @@ export function stepSim(sim: Sim, dt: number): StepResult {
     sim.harvestKey = ''; sim.harvestTimer = 0; sim.harvestMax = 0;
   }
 
-  updateAnimals(sim, dt);
+  if (sim.bowCd > 0) sim.bowCd = Math.max(0, sim.bowCd - dt);
+  updateAnimals(sim, dt, res);
+  stepProjectiles(sim, dt, res);
+  stepFishing(sim, dt, res);
   if (sim.village || sim.tick % 20 === 0) ensureVillage(sim, res); // aldea cercana (throttle si no hay)
   if (sim.location === 'cave') {
     sim.caveMobTimer -= dt;
     if (sim.caveMobTimer <= 0) { sim.caveMobTimer = CAVE_MOB_SPAWN_S; despawnFar(sim); trySpawnCaveMob(sim); }
   } else {
     sim.spawnTimer -= dt;
-    if (sim.spawnTimer <= 0) { sim.spawnTimer = ANIMAL_SPAWN_S; despawnFar(sim); trySpawnAnimal(sim); }
+    if (sim.spawnTimer <= 0) { sim.spawnTimer = ANIMAL_SPAWN_S; despawnFar(sim); trySpawnAnimal(sim); trySpawnHostile(sim); }
   }
 
   if (sim.location !== 'cave') stepFluids(sim, res);
@@ -499,6 +537,7 @@ export function toggleCave(sim: Sim, res: StepResult): void {
     Position.x[sim.playerId] = 0;
     Position.y[sim.playerId] = 0;
     sim.animals = sim.animals.filter((a) => a.layer === 'surface');
+    sim.projectiles = []; sim.fishing = null;
     sim.caveMobTimer = 2;
     sim.interactActive = false; sim.interactTarget = null; sim.harvestTimer = 0;
     res.sfx.push({ sound: 'ui:cave', x: 0, y: 0 });
@@ -513,11 +552,48 @@ export function toggleCave(sim: Sim, res: StepResult): void {
     Position.x[sim.playerId] = back.x;
     Position.y[sim.playerId] = back.y;
     sim.animals = sim.animals.filter((a) => a.layer === 'surface');
+    sim.projectiles = []; sim.fishing = null;
     sim.interactActive = false; sim.interactTarget = null; sim.harvestTimer = 0;
     res.sfx.push({ sound: 'ui:cave', x: back.x, y: back.y });
     res.floaters.push({ text: 'Sales a la superficie', color: 0x9edb8a, x: back.x, y: back.y });
   }
 }
+
+// Arranca la bajada/subida física: valida que hay entrada/salida y activa el
+// fundido. El cambio de capa real ocurre a mitad de la animación (a oscuras).
+export function beginCaveTransition(sim: Sim, res: StepResult): void {
+  if (sim.caveTransition || sim.dead) return;
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (sim.location === 'surface') {
+    const ex = Math.round(px), ey = Math.round(py);
+    if (!caveEntranceAt(ex, ey, sim.seed)) { res.floaters.push({ text: 'No hay ninguna entrada aquí', color: 0xff8a8a, x: px, y: py }); return; }
+    sim.descendFrom = { x: ex, y: ey };
+  } else {
+    if (Math.hypot(px, py) > 1.6) { res.floaters.push({ text: 'Ve a la salida (centro) para subir', color: 0xff8a8a, x: px, y: py }); return; }
+    sim.descendFrom = { x: Math.round(px), y: Math.round(py) };
+  }
+  sim.caveTransition = { dir: sim.location === 'surface' ? 'in' : 'out', t: 0, switched: false };
+  sim.interactActive = false; sim.interactTarget = null; sim.harvestTimer = 0;
+  sim.input = { up: false, down: false, left: false, right: false, sprint: false }; // congela el andar
+  res.sfx.push({ sound: sim.location === 'surface' ? 'cave:descend' : 'cave:ascend', x: px, y: py });
+}
+
+function stepCaveTransition(sim: Sim, dt: number, res: StepResult): void {
+  const tr = sim.caveTransition!;
+  tr.t += dt;
+  const half = CAVE_TRANSITION_S / 2;
+  if (!tr.switched && tr.t >= half) { tr.switched = true; toggleCave(sim, res); } // intercambio a oscuras
+  if (tr.t >= CAVE_TRANSITION_S) { sim.caveTransition = null; sim.caveCooldown = 1.0; sim.wasOnEntrance = true; }
+}
+
+// Alpha del fundido a negro (0..1) durante la bajada/subida.
+export function caveFadeOf(sim: Sim): number {
+  const tr = sim.caveTransition;
+  if (!tr) return 0;
+  const half = CAVE_TRANSITION_S / 2;
+  return tr.t < half ? tr.t / half : Math.max(0, 1 - (tr.t - half) / half);
+}
+export function caveEnteringOf(sim: Sim): boolean { return sim.caveTransition?.dir === 'in'; }
 
 // Identificador del objetivo de picado (resetea el progreso al cambiar).
 function interactKey(tgt: NonNullable<InteractTarget>): string {
@@ -654,18 +730,26 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
   if (an.type === 'villager') return 0; // a los aldeanos no se les ataca (se comercia)
   if (Math.hypot(an.x - px, an.y - py) > INTERACT_RANGE) return 0;
   const tool = toolFor(sim.activeTool);
-  const dmg = tool && tool.kind === 'sword' ? tool.tier : 1;
+  const dmg = tool && tool.kind === 'sword' ? tool.tier + 1 : 1;
   if (tool && tool.kind === 'sword') damageActiveTool(sim, res); // la espada se desgasta al atacar
+  damageAnimal(sim, an, dmg, px, py, res);
+  return HARVEST_COOLDOWN;
+}
+
+// Aplica daño a un animal/enemigo (cuerpo a cuerpo o flecha): retroceso, muerte y
+// botín. `fromX/fromY` es el origen del golpe (para el empuje).
+function damageAnimal(sim: Sim, an: Animal, dmg: number, fromX: number, fromY: number, res: StepResult): void {
   an.health -= dmg;
-  an.tx = an.x + (an.x - px) * 0.4;
-  an.ty = an.y + (an.y - py) * 0.4;
-  an.wait = 0.8;
+  const kd = Math.hypot(an.x - fromX, an.y - fromY) || 1;
+  an.tx = an.x + ((an.x - fromX) / kd) * 0.8;
+  an.ty = an.y + ((an.y - fromY) / kd) * 0.8;
+  an.wait = 0.6;
   if (an.health <= 0) {
     an.alive = false;
     res.sfx.push({ sound: 'animal:' + an.type + ':death', x: an.x, y: an.y });
     for (const drop of ANIMAL_DROPS[an.type]) {
       const span = drop.max - drop.min + 1;
-      const n = drop.min + Math.floor(hash2(an.id, drop.min, sim.seed) * span);
+      const n = drop.min + Math.floor(hash2(an.id, drop.min + sim.tick, sim.seed) * span);
       if (n > 0) addItem(sim, drop.item, n);
     }
     res.inventoryChanged = true;
@@ -673,14 +757,80 @@ function doInteract(sim: Sim, res: StepResult, px: number, py: number): number {
     res.sfx.push({ sound: 'animal:' + an.type + ':hurt', x: an.x, y: an.y });
     res.floaters.push({ text: '!', color: 0xff5555, x: an.x, y: an.y });
   }
-  return HARVEST_COOLDOWN;
 }
 
 const VILLAGE_ROAM = 13; // radio en el que deambulan los aldeanos
 
-function updateAnimals(sim: Sim, dt: number): void {
+// Mueve un animal hacia su objetivo (tx,ty) respetando colisiones de la capa.
+function moveAnimalToward(sim: Sim, a: Animal, step: number): void {
+  const dx = a.tx - a.x, dy = a.ty - a.y;
+  const d = Math.hypot(dx, dy);
+  if (d <= 0.1) return;
+  const s = Math.min(d, step);
+  const nx = a.x + (dx / d) * s;
+  const ny = a.y + (dy / d) * s;
+  const passable = a.layer === 'cave'
+    ? caveTile(Math.round(nx), Math.round(ny), sim.caveSeed).passable
+    : tileAt(Math.round(nx), Math.round(ny), sim.seed).passable && !(a.type === 'villager' && sim.villageWalls.has(keyOf(Math.round(nx), Math.round(ny))));
+  if (passable) { a.x = nx; a.y = ny; }
+  else { a.tx = a.x; a.ty = a.y; }
+}
+
+// Lanza una flecha desde (sx,sy) hacia (tx,ty).
+function spawnArrow(sim: Sim, sx: number, sy: number, tx: number, ty: number, dmg: number, from: 'player' | 'mob'): void {
+  const dx = tx - sx, dy = ty - sy;
+  const d = Math.hypot(dx, dy) || 1;
+  const SPEED = 13;
+  sim.projectiles.push({ x: sx, y: sy, vx: (dx / d) * SPEED, vy: (dy / d) * SPEED, life: 1.7, dmg, from, layer: sim.location });
+}
+
+function updateAnimals(sim: Sim, dt: number, res: StepResult): void {
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  const daySurface = sim.location === 'surface' && (() => { const tod = (sim.timeS % DAY_LENGTH_S) / DAY_LENGTH_S; return tod >= 0.3 && tod <= 0.7; })();
   for (const a of sim.animals) {
     if (!a.alive || a.layer !== sim.location) continue; // sólo la capa activa se mueve
+    const info = ANIMAL_INFO[a.type];
+    if (a.atkCd && a.atkCd > 0) a.atkCd -= dt;
+    if (a.shootCd && a.shootCd > 0) a.shootCd -= dt;
+
+    // Enemigos hostiles: persiguen y atacan al jugador dentro de su radio de aggro.
+    if (info.hostile && !sim.dead) {
+      // Los no-muertos se abrasan con el sol (petición: enemigos de noche).
+      if (daySurface && (a.type === 'zombie' || a.type === 'skeleton' || a.type === 'wraith')) {
+        a.health -= 9 * dt;
+        if (a.health <= 0) { a.alive = false; continue; }
+      }
+      const pdx = px - a.x, pdy = py - a.y;
+      const pd = Math.hypot(pdx, pdy);
+      if (pd <= (info.aggro ?? 8)) {
+        // Esqueleto: dispara flechas manteniendo la distancia.
+        if (info.ranged && pd > 2.2) {
+          if ((a.shootCd ?? 0) <= 0 && pd < (info.aggro ?? 8)) {
+            spawnArrow(sim, a.x, a.y - 0.4, px, py - 0.4, info.damage ?? 3, 'mob');
+            a.shootCd = 1.8 + hash2(a.id, sim.tick, sim.seed) * 0.8;
+          }
+          // se acerca sólo si está muy lejos; si está a tiro, mantiene posición
+          if (pd > (info.aggro ?? 8) * 0.75) { a.tx = a.x + pdx; a.ty = a.y + pdy; }
+          else { a.tx = a.x; a.ty = a.y; }
+        } else {
+          a.tx = px; a.ty = py; // persigue al jugador
+          if (pd <= 1.25 && (a.atkCd ?? 0) <= 0) {
+            applyDamage(sim, info.damage ?? 3);
+            a.atkCd = 1.1;
+            res.sfx.push({ sound: 'player:hurt', x: px, y: py });
+            res.floaters.push({ text: '-' + (info.damage ?? 3), color: 0xff6b6b, x: px, y: py });
+          }
+        }
+      } else if (a.wait <= 0 && Math.abs(a.x - a.tx) < 0.2 && Math.abs(a.y - a.ty) < 0.2) {
+        a.wait = 1 + hash2(a.id, sim.tick, sim.seed) * 3; // deambula si no ve al jugador
+        a.tx = a.x + (hash2(a.id, sim.tick + 1, sim.seed) - 0.5) * 6;
+        a.ty = a.y + (hash2(a.id, sim.tick + 2, sim.seed) - 0.5) * 6;
+      }
+      a.wait -= dt;
+      moveAnimalToward(sim, a, info.speed * dt);
+      continue;
+    }
+
     const rng = a.type === 'bat' ? 9 : 6;
     a.wait -= dt;
     if (a.wait <= 0 && Math.abs(a.x - a.tx) < 0.2 && Math.abs(a.y - a.ty) < 0.2) {
@@ -694,18 +844,7 @@ function updateAnimals(sim: Sim, dt: number): void {
         a.ty = a.y + (hash2(a.id, sim.tick + 2, sim.seed) - 0.5) * rng;
       }
     }
-    const dx = a.tx - a.x, dy = a.ty - a.y;
-    const d = Math.hypot(dx, dy);
-    if (d > 0.1) {
-      const step = Math.min(d, ANIMAL_INFO[a.type].speed * dt);
-      const nx = a.x + (dx / d) * step;
-      const ny = a.y + (dy / d) * step;
-      const passable = a.layer === 'cave'
-        ? caveTile(Math.round(nx), Math.round(ny), sim.caveSeed).passable
-        : tileAt(Math.round(nx), Math.round(ny), sim.seed).passable && !(a.type === 'villager' && sim.villageWalls.has(keyOf(Math.round(nx), Math.round(ny))));
-      if (passable) { a.x = nx; a.y = ny; }
-      else { a.tx = a.x; a.ty = a.y; }
-    }
+    moveAnimalToward(sim, a, info.speed * dt);
   }
   sim.animals = sim.animals.filter((a) => a.alive);
 }
@@ -714,6 +853,105 @@ function despawnFar(sim: Sim): void {
   const px = Position.x[sim.playerId];
   const py = Position.y[sim.playerId];
   sim.animals = sim.animals.filter((a) => a.type === 'villager' || a.layer !== sim.location || Math.hypot(a.x - px, a.y - py) < SPAWN_RADIUS * 1.7);
+}
+
+// Avanza las flechas en vuelo: colisión con terreno, enemigos (del jugador) o el
+// jugador (de los enemigos).
+function stepProjectiles(sim: Sim, dt: number, res: StepResult): void {
+  if (!sim.projectiles.length) return;
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  const kept: Projectile[] = [];
+  for (const p of sim.projectiles) {
+    if (p.layer !== sim.location) continue; // se descartan al cambiar de capa
+    p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
+    let dead = p.life <= 0 || blockedAt(sim, p.x, p.y);
+    if (!dead && p.from === 'player') {
+      for (const a of sim.animals) {
+        if (!a.alive || a.layer !== sim.location || a.type === 'villager') continue;
+        if (Math.hypot(a.x - p.x, a.y - p.y) <= 0.6) { damageAnimal(sim, a, p.dmg, p.x - p.vx, p.y - p.vy, res); dead = true; break; }
+      }
+    } else if (!dead && p.from === 'mob' && !sim.dead) {
+      if (Math.hypot(px - p.x, py - p.y) <= 0.55) {
+        applyDamage(sim, p.dmg);
+        res.floaters.push({ text: '-' + p.dmg, color: 0xff6b6b, x: px, y: py });
+        dead = true;
+      }
+    }
+    if (!dead && Math.hypot(p.x - px, p.y - py) > SPAWN_RADIUS * 2) dead = true;
+    if (!dead) kept.push(p);
+  }
+  sim.projectiles = kept;
+}
+
+// Dispara el arco hacia (tx,ty) consumiendo una flecha.
+export function shootBow(sim: Sim, tx: number, ty: number, res: StepResult): void {
+  if (sim.dead) return;
+  const d = ITEMS[sim.activeTool ?? ''];
+  if (!d || d.weapon !== 'bow' || sim.bowCd > 0) return;
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (invCount(sim, 'arrow') < 1) { res.floaters.push({ text: 'Sin flechas', color: 0xff8a8a, x: px, y: py }); return; }
+  takeFrom(sim.inv, 'arrow', 1);
+  res.inventoryChanged = true;
+  spawnArrow(sim, px, py - 0.4, tx, ty, 3, 'player');
+  sim.bowCd = 0.55;
+  res.sfx.push({ sound: 'bow:shoot', x: px, y: py });
+}
+
+// Cuenta tiles de agua conectadas a (x,y) hasta un tope (exige aguas grandes).
+function waterBodySize(sim: Sim, x: number, y: number, cap: number): number {
+  const seen = new Set<string>();
+  const stack: [number, number][] = [[x, y]];
+  let count = 0;
+  while (stack.length && count < cap) {
+    const [cx, cy] = stack.pop()!;
+    const k = keyOf(cx, cy);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (!effWater(sim, cx, cy)) continue;
+    count++;
+    stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+  }
+  return count;
+}
+
+// Lanza (o recoge) el sedal. Sólo se pesca en masas de agua grandes.
+export function startFishing(sim: Sim, tx: number, ty: number, res: StepResult): void {
+  if (sim.dead) return;
+  const d = ITEMS[sim.activeTool ?? ''];
+  if (!d || !d.fishing) return;
+  if (sim.fishing) { sim.fishing = null; return; } // segunda pulsación: recoge
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  if (sim.location === 'cave') { res.floaters.push({ text: 'No puedes pescar aquí', color: 0xff8a8a, x: px, y: py }); return; }
+  const adx = tx - px, ady = ty - py;
+  const ad = Math.hypot(adx, ady) || 1;
+  let wx = 0, wy = 0, found = false;
+  for (let s = 1; s <= 6; s++) {
+    const cx = Math.round(px + (adx / ad) * s), cy = Math.round(py + (ady / ad) * s);
+    if (effWater(sim, cx, cy)) { wx = cx; wy = cy; found = true; break; }
+  }
+  if (!found) { res.floaters.push({ text: 'Apunta al agua para pescar', color: 0xff8a8a, x: px, y: py }); return; }
+  if (waterBodySize(sim, wx, wy, 16) < 12) { res.floaters.push({ text: 'Necesitas una masa de agua grande', color: 0xffd05a, x: wx, y: wy }); return; }
+  sim.fishing = { t: 0, until: 2.5 + hash2(wx, wy, sim.tick | 0) * 3.5, x: wx, y: wy };
+  res.sfx.push({ sound: 'fish:cast', x: wx, y: wy });
+  res.floaters.push({ text: 'Lanzas el sedal…', color: 0x8bd1ff, x: wx, y: wy });
+}
+
+function stepFishing(sim: Sim, dt: number, res: StepResult): void {
+  const f = sim.fishing;
+  if (!f) return;
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  const d = ITEMS[sim.activeTool ?? ''];
+  if (sim.dead || sim.location === 'cave' || !d || !d.fishing || Math.hypot(f.x - px, f.y - py) > 8) { sim.fishing = null; return; }
+  f.t += dt;
+  if (f.t >= f.until) {
+    const roll = hash2(sim.tick | 0, (f.x + f.y) | 0, sim.seed);
+    const catchItem = roll < 0.12 ? 'string' : roll < 0.2 ? 'stick' : 'raw_fish';
+    addItem(sim, catchItem, 1);
+    res.inventoryChanged = true;
+    res.sfx.push({ sound: 'fish:catch', x: f.x, y: f.y });
+    res.floaters.push({ text: catchItem === 'raw_fish' ? '¡Pez!' : '+ ' + ITEMS[catchItem].name, color: 0x8bf58b, x: f.x, y: f.y });
+    sim.fishing = null;
+  }
 }
 
 function clearVillage(sim: Sim): void {
@@ -1129,6 +1367,23 @@ export function animalSnaps(sim: Sim): AnimalSnap[] {
   return sim.animals.filter((a) => a.layer === sim.location).map((a) => (
     a.vid !== undefined ? { id: a.id, type: a.type, x: a.x, y: a.y, alive: a.alive, vid: a.vid } : { id: a.id, type: a.type, x: a.x, y: a.y, alive: a.alive }
   ));
+}
+// Sólo desarrollo/pruebas: genera un enemigo de cada tipo alrededor del jugador.
+export function debugSpawnEnemies(sim: Sim): void {
+  const px = Position.x[sim.playerId], py = Position.y[sim.playerId];
+  const types: AnimalType[] = ['zombie', 'skeleton', 'spider', 'slime', 'wraith'];
+  types.forEach((type, i) => {
+    const ang = (i / types.length) * Math.PI * 2 - Math.PI / 2;
+    const x = Math.round(px + Math.cos(ang) * 3.2), y = Math.round(py + Math.sin(ang) * 3.2);
+    sim.animals.push({ id: sim.nextAnimalId++, type, x, y, tx: x, ty: y, wait: 999, health: 999, alive: true, layer: sim.location });
+  });
+}
+
+export function projectileSnaps(sim: Sim): { x: number; y: number; vx: number; vy: number }[] {
+  return sim.projectiles.filter((p) => p.layer === sim.location).map((p) => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy }));
+}
+export function fishingSnap(sim: Sim): { x: number; y: number } | null {
+  return sim.fishing ? { x: sim.fishing.x, y: sim.fishing.y } : null;
 }
 export function invSlots(sim: Sim): Slot[] { return sim.inv; }
 export function armorSlots(sim: Sim): Slot[] { return sim.armor; }

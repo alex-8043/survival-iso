@@ -2,9 +2,10 @@
 
 import {
   createSim, createSimFromSave, serializeSim, stepSim, consume, drink, craft, place, board,
-  timeInfo, animalSnaps, invSlots, playerPos, onWaterOf, toggleCave, onEntranceOf, bestFood,
+  timeInfo, animalSnaps, invSlots, playerPos, onWaterOf, beginCaveTransition, caveFadeOf, caveEnteringOf, onEntranceOf, bestFood,
   moveItem, quickMove, moveAmount, sortInv, sortChest, chestItems,
   sleep, trade, acceptQuest, completeQuest, jump, respawn, harvestInfo, torchList, armorSlots, furnaceView,
+  shootBow, startFishing, projectileSnaps, fishingSnap, debugSpawnEnemies,
 } from './world';
 import type { Sim, StepResult } from './world';
 import { WORLD_SEED, TICK_MS } from '../shared/constants';
@@ -61,8 +62,10 @@ function startLoop(): void {
     const hi = harvestInfo(sim);
     const snap: Snapshot = {
       tick: sim.tick, px: p.x, py: p.y, onWater: onWaterOf(sim),
-      animals: animalSnaps(sim), stats: sim.stats, time: timeInfo(sim),
+      animals: animalSnaps(sim), projectiles: projectileSnaps(sim), fishing: fishingSnap(sim),
+      stats: sim.stats, time: timeInfo(sim),
       loc: sim.location, caveSeed: sim.caveSeed, onEntrance: onEntranceOf(sim), riding: sim.riding, dead: sim.dead,
+      caveFade: caveFadeOf(sim), caveEntering: caveEnteringOf(sim),
       harvestActive: hi.active, harvestProgress: hi.progress, harvestX: hi.x, harvestY: hi.y,
     };
     post({ t: 'snapshot', snap });
@@ -78,7 +81,9 @@ function startLoop(): void {
 ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
   const m = e.data;
   if (m.t === 'init') {
-    sim = m.mode === 'continue' && m.save ? createSimFromSave(m.save) : createSim(WORLD_SEED);
+    // Partida nueva = seed aleatoria (apareces en un sitio distinto cada vez).
+    const newSeed = (Math.floor(Math.random() * 2147483646) + 1) | 0;
+    sim = m.mode === 'continue' && m.save ? createSimFromSave(m.save) : createSim(m.mode === 'new' ? newSeed : WORLD_SEED);
     post({ t: 'ready', seed: sim.seed, inv: invSlots(sim), stats: sim.stats, structures: sim.structures, loc: sim.location, caveSeed: sim.caveSeed });
     postQuests();
     postTerrainAll();
@@ -90,7 +95,19 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
   if (!sim) return;
   if (m.t === 'input') sim.input = m.input;
   else if (m.t === 'interact') { sim.interactActive = m.active; sim.interactTarget = m.target; }
-  else if (m.t === 'selectTool') sim.activeTool = m.item;
+  else if (m.t === 'shoot') {
+    const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [], structuresChanged: false };
+    shootBow(sim, m.x, m.y, res);
+    if (res.inventoryChanged) postInv();
+    for (const f of res.floaters) post({ t: 'floater', ...f });
+    for (const s of res.sfx) post({ t: 'sfx', sound: s.sound, x: s.x, y: s.y });
+  } else if (m.t === 'fish') {
+    const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [], structuresChanged: false };
+    startFishing(sim, m.x, m.y, res);
+    if (res.inventoryChanged) postInv();
+    for (const f of res.floaters) post({ t: 'floater', ...f });
+    for (const s of res.sfx) post({ t: 'sfx', sound: s.sound, x: s.x, y: s.y });
+  } else if (m.t === 'selectTool') sim.activeTool = m.item;
   else if (m.t === 'craft') {
     const r = craft(sim, m.id);
     if (r.ok) postInv();
@@ -151,7 +168,7 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     postChest(m.id);
   } else if (m.t === 'toggleCave') {
     const res: StepResult = { floaters: [], harvestEvents: [], inventoryChanged: false, sfx: [], edits: [], fluids: [], structuresChanged: false };
-    toggleCave(sim, res);
+    beginCaveTransition(sim, res);
     for (const f of res.floaters) post({ t: 'floater', ...f });
     for (const s of res.sfx) post({ t: 'sfx', sound: s.sound, x: s.x, y: s.y });
   } else if (m.t === 'board') {
@@ -173,4 +190,5 @@ ctx.onmessage = (e: MessageEvent<ClientMsg>) => {
     if (r.ok) { postInv(); postQuests(); }
     if (r.floater) post({ t: 'floater', ...r.floater });
   } else if (m.t === 'requestSave') post({ t: 'save', state: serializeSim(sim) });
+  else if ((m as { t: string }).t === 'debugSpawn') { debugSpawnEnemies(sim); } // sólo dev (ver main.ts)
 };

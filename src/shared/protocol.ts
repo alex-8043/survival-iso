@@ -14,6 +14,8 @@ export interface AnimalSnap {
   vid?: number; // id de comercio si es aldeano
 }
 
+export interface ProjSnap { x: number; y: number; vx: number; vy: number; }
+
 export interface Structure {
   id: number;
   type: string; // id de ítem colocable (crafting_table, wood_block, ...)
@@ -46,6 +48,8 @@ export interface Snapshot {
   py: number;
   onWater: boolean;
   animals: AnimalSnap[];
+  projectiles: ProjSnap[]; // flechas en vuelo
+  fishing: { x: number; y: number } | null; // boya de pesca activa
   stats: Stats;
   time: TimeInfo;
   loc: Location;
@@ -53,6 +57,8 @@ export interface Snapshot {
   onEntrance: boolean; // sobre una entrada de cueva (superficie) o salida (cueva)
   riding: boolean; // en barca
   dead: boolean; // sin vida (mostrar pantalla de muerte)
+  caveFade: number; // 0..1 fundido a negro de la bajada/subida física
+  caveEntering: boolean; // true si se está bajando (hundir sprite), false si subiendo
   harvestActive: boolean; // hay un picado cargándose (dibujar barra de progreso)
   harvestProgress: number; // 0..1 del picado actual
   harvestX: number; // posición del objetivo picado (para situar la barra)
@@ -108,6 +114,8 @@ export type ClientMsg =
   | { t: 'init'; mode: 'new' | 'continue'; save?: SaveState }
   | { t: 'input'; input: InputState }
   | { t: 'interact'; active: boolean; target: InteractTarget }
+  | { t: 'shoot'; x: number; y: number } // disparar arco hacia una coordenada
+  | { t: 'fish'; x: number; y: number } // lanzar/recoger caña hacia una coordenada
   | { t: 'selectTool'; item: string | null }
   | { t: 'craft'; id: string }
   | { t: 'place'; item: string; x: number; y: number }
